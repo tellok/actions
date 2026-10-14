@@ -1,0 +1,57 @@
+name: Publish verified image
+description: Publish an explicitly verified Docker archive without rebuilding it
+inputs:
+  archive:
+    description: Gzip compressed Docker image archive
+    required: true
+  identity-file:
+    description: JSON with source, version, platform, reference, imageId and optional layers/archiveHash/archiveSize
+    required: true
+  image:
+    description: Registry image repository without a tag
+    required: true
+  tags:
+    description: JSON array of immutable destination tags
+    required: true
+  existing-policy:
+    description: exact requires identical image ID; source permits reusing the verified same source/version/platform image
+    default: exact
+  registry:
+    description: Registry hostname
+    required: true
+  username:
+    description: Registry username
+    required: true
+  password:
+    description: Registry token or password
+    required: true
+outputs:
+  digest:
+    description: Confirmed registry digest
+    value: ${{ steps.publish.outputs.digest }}
+  image-id:
+    description: Published image configuration digest
+    value: ${{ steps.publish.outputs.imageId }}
+runs:
+  using: composite
+  steps:
+    - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      with:
+        cache-binary: false
+    - id: publish
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_INPUTS: ${{ toJSON(inputs) }}
+      with:
+        script: |
+          const input = JSON.parse(process.env.TOOLKIT_INPUTS);
+          core.setSecret(input.password);
+          const expected = JSON.parse(await require('node:fs/promises').readFile(input['identity-file'],'utf8'));
+          const result = await require(process.env.TOOLKIT_ACTION_PATH+'/lib/publish.cjs').publish({archive:input.archive,expected,image:input.image,tags:JSON.parse(input.tags),existingPolicy:input['existing-policy']});
+          for(const [key,value] of Object.entries(result)) core.setOutput(key,value);

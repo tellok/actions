@@ -1,0 +1,24 @@
+{
+  "name": "ci-toolkit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Composable CI actions with caller-provided project and environment configuration",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "node build.cjs",
+    "test": "node --test github-actions/*/tests/*.test.cjs",
+    "check": "node check.cjs"
+  },
+  "exports": {
+    "./s3-artifacts": "./github-actions/s3-artifacts/dist/index.js",
+    "./github-release": "./github-actions/github-release/dist/index.js",
+    "./publish-image": "./github-actions/publish-image/lib/publish.cjs",
+    "./changesets-version-pr": "./github-actions/changesets-version-pr/lib/version.cjs"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "3.1151.0",
+    "@octokit/rest": "22.0.1",
+    "@vercel/ncc": "0.45.0",
+    "yaml": "2.8.1"
+  }
+}

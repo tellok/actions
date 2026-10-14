@@ -1,0 +1,56 @@
+name: Verified GitHub release
+description: Manage a draft, verify explicit assets, publish or recover an existing release using the official API client
+inputs:
+  operation:
+    description: draft, publish or recover
+    default: publish
+  source:
+    description: Full commit SHA already approved by the caller's release policy
+    required: true
+  tag:
+    description: Immutable release tag
+    required: true
+  name:
+    description: Release display name
+    required: true
+  notes-file:
+    description: Caller-generated exact-version release notes file
+    required: true
+  assets-file:
+    description: JSON array of local path/name/hash asset entries
+    default: ''
+  body-start:
+    description: Managed release notes opening marker
+    default: '<!-- ci-toolkit:release:start -->'
+  body-end:
+    description: Managed release notes closing marker
+    default: '<!-- ci-toolkit:release:end -->'
+  latest:
+    description: Explicit caller-verified Latest promotion; recovery always ignores this
+    default: 'false'
+  github-token:
+    description: Token scoped to the caller's release repository
+    default: ${{ github.token }}
+outputs:
+  id:
+    description: Confirmed fixed Release ID
+    value: ${{ steps.release.outputs.id }}
+  url:
+    description: Release URL
+    value: ${{ steps.release.outputs.url }}
+  published:
+    description: Whether the release is confirmed published
+    value: ${{ steps.release.outputs.published }}
+runs:
+  using: composite
+  steps:
+    - name: Apply and verify the declared release operation
+      id: release
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_INPUTS: ${{ toJSON(inputs) }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          await require(process.env.TOOLKIT_ACTION_PATH+'/dist/index.js').run({inputs:JSON.parse(process.env.TOOLKIT_INPUTS),github,context,core});

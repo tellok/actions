@@ -1,0 +1,142 @@
+name: Changesets version PR
+description: Detect pending changesets and maintain one version PR using a caller-pinned CLI and a leased upstream PR writer
+inputs:
+  operation:
+    description: detect or maintain
+    default: maintain
+  path:
+    description: Repository path relative to the workspace
+    default: .
+  changeset-directory:
+    description: Changesets directory relative to path
+    default: .changeset
+  base:
+    description: Actual target branch; defaults to repository metadata
+    default: ''
+  branch:
+    description: Managed version branch; required for maintain
+    default: ''
+  version-command:
+    description: Caller command using the project's installed and pinned Changesets CLI
+    default: ''
+  allowed-paths:
+    description: Newline-separated git pathspecs allowed in a version preparation
+    default: ''
+  ownership-marker:
+    description: Marker identifying this version automation
+    default: '<!-- ci-toolkit:version-pr -->'
+  managed-author:
+    description: Expected PR author; empty permits callers with their own verified automation identity
+    default: github-actions[bot]
+  title:
+    description: Version PR title
+    default: 'chore(release): prepare versions'
+  commit-message:
+    description: Version preparation commit message
+    default: 'chore(release): prepare versions'
+  body:
+    description: Caller-generated proposed release notes
+    default: ''
+  body-file:
+    description: File containing caller-generated notes, relative to path
+    default: ''
+  body-start:
+    description: Managed notes opening marker
+    default: '<!-- ci-toolkit:release:start -->'
+  body-end:
+    description: Managed notes closing marker
+    default: '<!-- ci-toolkit:release:end -->'
+  github-token:
+    description: Token with contents and pull-requests write for maintain; detect needs neither
+    default: ${{ github.token }}
+outputs:
+  found:
+    description: Whether candidate changesets exist
+    value: ${{ steps.prepare.outputs.found }}
+  count:
+    description: Candidate changeset count
+    value: ${{ steps.prepare.outputs.count }}
+  pull-request-number:
+    description: Confirmed version PR number
+    value: ${{ steps.confirm.outputs.number }}
+  head-sha:
+    description: Confirmed version PR head
+    value: ${{ steps.confirm.outputs.head }}
+  url:
+    description: Confirmed PR URL
+    value: ${{ steps.confirm.outputs.url }}
+runs:
+  using: composite
+  steps:
+    - name: Detect and prepare version changes
+      id: prepare
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_INPUTS: ${{ toJSON(inputs) }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('node:fs/promises');
+          const path = require('node:path');
+          const impl = require(path.join(process.env.TOOLKIT_ACTION_PATH, 'lib/version.cjs'));
+          const inputs = JSON.parse(process.env.TOOLKIT_INPUTS);
+          if (!['detect', 'maintain'].includes(inputs.operation)) throw new Error('Invalid operation');
+          const pending = await impl.detect(path.resolve(process.env.GITHUB_WORKSPACE, inputs.path), inputs['changeset-directory']);
+          core.setOutput('found', String(pending.found)); core.setOutput('count', pending.count);
+          core.setOutput('changed', 'false');
+          if (inputs.operation === 'detect' || !pending.found) return;
+          const state = await impl.prepare({ inputs, github, context });
+          if (!state.tree) return;
+          const file = path.join(state.temp, 'state.json');
+          await fs.writeFile(file, JSON.stringify(state), { mode: 0o600 });
+          core.setOutput('state', file);
+          await impl.installLeaseHook(state);
+          for (const [key, value] of Object.entries({changed:'true',base:state.base,expected:state.expected,body:state.bodyPath})) core.setOutput(key,value);
+    - name: Create or update the version PR
+      id: writer
+      if: steps.prepare.outputs.changed == 'true'
+      continue-on-error: true
+      uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676
+      env:
+        CI_EXPECTED_VERSION_REF: refs/heads/${{ inputs.branch }}
+        CI_EXPECTED_VERSION_SHA: ${{ steps.prepare.outputs.expected }}
+      with:
+        token: ${{ inputs.github-token }}
+        path: ${{ inputs.path }}
+        base: ${{ steps.prepare.outputs.base }}
+        branch: ${{ inputs.branch }}
+        add-paths: ${{ inputs.allowed-paths }}
+        title: ${{ inputs.title }}
+        commit-message: ${{ inputs.commit-message }}
+        body-path: ${{ steps.prepare.outputs.body }}
+        author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+        committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+        sign-commits: false
+        delete-branch: false
+    - name: Confirm the exact version PR
+      id: confirm
+      if: always() && !cancelled() && steps.prepare.outputs.changed == 'true'
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_STATE: ${{ steps.prepare.outputs.state }}
+        TOOLKIT_PR: ${{ steps.writer.outputs.pull-request-number }}
+        TOOLKIT_HEAD: ${{ steps.writer.outputs.pull-request-head-sha }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const impl = require(process.env.TOOLKIT_ACTION_PATH + '/lib/version.cjs');
+          const state = JSON.parse(await require('node:fs/promises').readFile(process.env.TOOLKIT_STATE, 'utf8'));
+          const result = await impl.verifyResult({github,context,state,number:process.env.TOOLKIT_PR,head:process.env.TOOLKIT_HEAD});
+          for (const [key,value] of Object.entries(result)) core.setOutput(key,value);
+    - name: Restore temporary Git configuration
+      if: always() && steps.prepare.outputs.state != ''
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_STATE: ${{ steps.prepare.outputs.state }}
+      with:
+        script: |
+          const state = JSON.parse(await require('node:fs/promises').readFile(process.env.TOOLKIT_STATE, 'utf8'));
+          await require(process.env.TOOLKIT_ACTION_PATH + '/lib/version.cjs').restore(state);
