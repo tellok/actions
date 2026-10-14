@@ -93,6 +93,15 @@ function createGitHubClient({
         }
         throw new Error(
           `GitHub API ${method} failed${error.status ? " (HTTP " + error.status + ")" : ""}`,
+          {
+            cause: {
+              status: error.status,
+              message:
+                typeof error.response?.data?.message === "string"
+                  ? error.response.data.message.slice(0, 200)
+                  : undefined,
+            },
+          },
         );
       }
     }
@@ -302,11 +311,26 @@ async function ensureRelease({
   if (operation === "recover" && (!actualTag || !release))
     throw new Error("Recovery requires an existing verified release");
   if (!actualTag) {
+    let writeError;
     try {
       await api.createTag(tag, source);
-    } catch {}
-    actualTag = await api.getTag(tag);
-    if (actualTag !== source) throw new Error("Tag creation is unconfirmed");
+    } catch (error) {
+      writeError = error;
+    }
+    for (let attempt = 0; attempt < 4; attempt++) {
+      actualTag = await api.getTag(tag);
+      if (actualTag || attempt === 3) break;
+      await sleep(200 * (attempt + 1));
+    }
+    if (actualTag !== source)
+      throw new Error(
+        "Tag creation is unconfirmed" +
+          (writeError
+            ? ": " +
+              writeError.message +
+              (writeError.cause?.message ? " " + writeError.cause.message : "")
+            : ""),
+      );
   }
   const body = managedBody(release?.body || "", notes, start, end);
   if (!release) {
