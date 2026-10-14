@@ -12,40 +12,40 @@ inputs:
     default: .changeset
   base:
     description: Actual target branch; defaults to repository metadata
-    default: ''
+    default: ""
   branch:
     description: Managed version branch; required for maintain
-    default: ''
+    default: ""
   version-command:
     description: Caller command using the project's installed and pinned Changesets CLI
-    default: ''
+    default: ""
   allowed-paths:
     description: Newline-separated git pathspecs allowed in a version preparation
-    default: ''
+    default: ""
   ownership-marker:
     description: Marker identifying this version automation
-    default: '<!-- ci-toolkit:version-pr -->'
+    default: "<!-- ci-toolkit:version-pr -->"
   managed-author:
     description: Expected PR author; empty permits callers with their own verified automation identity
     default: github-actions[bot]
   title:
     description: Version PR title
-    default: 'chore(release): prepare versions'
+    default: "chore(release): prepare versions"
   commit-message:
     description: Version preparation commit message
-    default: 'chore(release): prepare versions'
+    default: "chore(release): prepare versions"
   body:
     description: Caller-generated proposed release notes
-    default: ''
+    default: ""
   body-file:
     description: File containing caller-generated notes, relative to path
-    default: ''
+    default: ""
   body-start:
     description: Managed notes opening marker
-    default: '<!-- ci-toolkit:release:start -->'
+    default: "<!-- ci-toolkit:release:start -->"
   body-end:
     description: Managed notes closing marker
-    default: '<!-- ci-toolkit:release:end -->'
+    default: "<!-- ci-toolkit:release:end -->"
   github-token:
     description: Token with contents and pull-requests write for maintain; detect needs neither
     default: ${{ github.token }}

@@ -12,40 +12,40 @@ inputs:
     required: true
   labels:
     description: Caller-provided OCI labels
-    default: ''
+    default: ""
   platforms:
     description: Build platforms; empty uses the builder platform
-    default: ''
+    default: ""
   build-args:
     description: Newline-separated Docker build arguments
-    default: ''
+    default: ""
   target:
     description: Optional build target
-    default: ''
+    default: ""
   pull:
     description: Pull referenced base images
-    default: 'true'
+    default: "true"
   cache-root:
     description: Optional persistent cache root; supplied and mounted by the runner operator
-    default: ''
+    default: ""
   cache-namespace:
     description: Cache namespace inside cache-root
     default: ${{ github.repository }}
   read-scopes:
     description: Whitespace-separated cache scopes allowed for imports
-    default: ''
+    default: ""
   write-scope:
     description: Scope allowed for this export; empty is read-only
-    default: ''
+    default: ""
   max-generation-bytes:
     description: Maximum new cache generation size; zero disables this bound
-    default: '0'
+    default: "0"
   max-total-bytes:
     description: Maximum bytes under cache-root before publishing a new generation
-    default: '0'
+    default: "0"
   keep-generations:
     description: Minimum recent complete generations retained per scope
-    default: '2'
+    default: "2"
 outputs:
   image-id:
     description: Docker image ID loaded for the caller's acceptance tests
@@ -85,8 +85,8 @@ runs:
       id: build
       uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
       env:
-        DOCKER_BUILD_RECORD_UPLOAD: 'false'
-        DOCKER_BUILD_SUMMARY: 'false'
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
+        DOCKER_BUILD_SUMMARY: "false"
       with:
         context: ${{ inputs.context }}
         file: ${{ inputs.file }}

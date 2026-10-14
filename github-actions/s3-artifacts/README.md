@@ -20,7 +20,7 @@ identity-file：`{"repository":"example/app","source":"<40-char-sha>","run":1,"a
     output-file: build/record.json
 ```
 
-upload 使用 If-None-Match:*，不会覆盖冲突对象；响应未知时以 SHA-256 回读确认。download 校验完整字节后原子替换，下载失败保留原文件并删除自己的 partial。仅 404 表示不存在；权限/网络错误失败，不误作不存在。允许大小默认单文件 2 GiB。SDK 只在只读请求网络/暂时错误时重试，不盲目重试未知写入。
+upload 使用 If-None-Match:\*，不会覆盖冲突对象；响应未知时以 SHA-256 回读确认。download 校验完整字节后原子替换，下载失败保留原文件并删除自己的 partial。仅 404 表示不存在；权限/网络错误失败，不误作不存在。允许大小默认单文件 2 GiB。SDK 只在只读请求网络/暂时错误时重试，不盲目重试未知写入。
 
 delete 需要 record-file 与 consumers-file（`[{"id":20,"status":"completed"}]`）；先核对对象大小与生产身份 Metadata，再按 ETag 条件删除并确认不存在。调用方必须从可信 CI API 核实生产登记和消费者终态，不应接受 PR 任意生成的删除许可。旧格式对象缺少 Metadata 时不会删除。使用的服务须支持 S3 条件写/删除，否则失败，不降级成无条件覆盖。register 只回读既有对象，不重新上传。
 

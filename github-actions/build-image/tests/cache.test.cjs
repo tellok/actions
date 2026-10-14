@@ -1,14 +1,118 @@
-const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs/promises');
-const {join}=require('node:path');const {tmpdir}=require('node:os');const {execFileSync}=require('node:child_process');
-const script=join(__dirname,'../lib/cache.py');
-const call=(op,value)=>JSON.parse(execFileSync('python3',[script,op],{input:JSON.stringify(value),encoding:'utf8',stdio:['pipe','pipe','pipe']}));
-async function root(t){const dir=await fs.mkdtemp(join(tmpdir(),'build-cache-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));return dir;}
-const config=dir=>({'cache-root':dir,'cache-namespace':'example/project','read-scopes':'main','write-scope':'main','keep-generations':'1'});
-async function complete(state,value='lock-A'){await fs.writeFile(join(state.export,'index.json'),JSON.stringify({manifests:[value]}));call('commit',state);return join(state.root,state.scope,'complete-'+state.token);}
-test('same build input reuses a completed generation',async(t)=>{const dir=await root(t),one=call('prepare',config(dir));const gen=await complete(one);call('release',one);const two=call('prepare',config(dir));assert.equal(two.imports,'type=local,src='+gen);call('release',two);});
-test('source-only update retains dependency cache imports',async(t)=>{const dir=await root(t),one=call('prepare',config(dir));await complete(one,'dependency-lock');call('release',one);const changed=call('prepare',{...config(dir),execution:'source-B'});assert.match(await fs.readFile(join(changed.imports.slice(15),'index.json'),'utf8'),/dependency-lock/);call('release',changed);});
-test('lock update publishes a distinct complete generation',async(t)=>{const dir=await root(t),one=call('prepare',config(dir));await complete(one,'lock-A');call('release',one);const two=call('prepare',config(dir));const gen=await complete(two,'lock-B');assert.match(await fs.readFile(join(gen,'index.json'),'utf8'),/lock-B/);assert.notEqual(one.token,two.token);call('release',two);});
-test('concurrent writers publish independent complete generations',async(t)=>{const dir=await root(t),one=call('prepare',config(dir)),two=call('prepare',config(dir));assert.notEqual(one.export,two.export);await Promise.all([complete(one),complete(two)]);const link=await fs.readlink(join(one.root,'main/current'));assert.ok([one,two].some(x=>link==='complete-'+x.token));call('release',one);call('release',two);});
-test('active reader protects an older generation during collection',async(t)=>{const dir=await root(t),one=call('prepare',config(dir));const old=await complete(one);call('release',one);const reader=call('prepare',{...config(dir),'write-scope':''});const two=call('prepare',config(dir));await complete(two);call('release',two);await fs.access(old);call('release',reader);await assert.rejects(fs.access(old));});
-test('interrupted export leaves previous pointer and other writer untouched',async(t)=>{const dir=await root(t),one=call('prepare',config(dir));const old=await complete(one);call('release',one);const broken=call('prepare',config(dir)),other=call('prepare',config(dir));assert.throws(()=>call('commit',broken));call('release',broken);await fs.access(other.export);assert.equal(await fs.realpath(join(one.root,'main/current')),old);call('release',other);});
-test('read-only scopes and path escapes cannot overwrite shared cache',async(t)=>{const dir=await root(t);const state=call('prepare',{...config(dir),'write-scope':''});assert.equal(call('commit',state).published,false);call('release',state);assert.throws(()=>call('prepare',{...config(dir),'cache-namespace':'../escape'}));const evil=join(dir,'elsewhere');await fs.mkdir(evil);await fs.mkdir(join(dir,'example/project/main'),{recursive:true});await fs.symlink(evil,join(dir,'example/project/main/current'));assert.throws(()=>call('prepare',config(dir)));});
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const { join } = require("node:path");
+const { tmpdir } = require("node:os");
+const { execFileSync } = require("node:child_process");
+const script = join(__dirname, "../lib/cache.py");
+const call = (op, value) =>
+  JSON.parse(
+    execFileSync("python3", [script, op], {
+      input: JSON.stringify(value),
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }),
+  );
+async function root(t) {
+  const dir = await fs.mkdtemp(join(tmpdir(), "build-cache-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+const config = (dir) => ({
+  "cache-root": dir,
+  "cache-namespace": "example/project",
+  "read-scopes": "main",
+  "write-scope": "main",
+  "keep-generations": "1",
+});
+async function complete(state, value = "lock-A") {
+  await fs.writeFile(
+    join(state.export, "index.json"),
+    JSON.stringify({ manifests: [value] }),
+  );
+  call("commit", state);
+  return join(state.root, state.scope, "complete-" + state.token);
+}
+test("same build input reuses a completed generation", async (t) => {
+  const dir = await root(t),
+    one = call("prepare", config(dir));
+  const gen = await complete(one);
+  call("release", one);
+  const two = call("prepare", config(dir));
+  assert.equal(two.imports, "type=local,src=" + gen);
+  call("release", two);
+});
+test("source-only update retains dependency cache imports", async (t) => {
+  const dir = await root(t),
+    one = call("prepare", config(dir));
+  await complete(one, "dependency-lock");
+  call("release", one);
+  const changed = call("prepare", { ...config(dir), execution: "source-B" });
+  assert.match(
+    await fs.readFile(join(changed.imports.slice(15), "index.json"), "utf8"),
+    /dependency-lock/,
+  );
+  call("release", changed);
+});
+test("lock update publishes a distinct complete generation", async (t) => {
+  const dir = await root(t),
+    one = call("prepare", config(dir));
+  await complete(one, "lock-A");
+  call("release", one);
+  const two = call("prepare", config(dir));
+  const gen = await complete(two, "lock-B");
+  assert.match(await fs.readFile(join(gen, "index.json"), "utf8"), /lock-B/);
+  assert.notEqual(one.token, two.token);
+  call("release", two);
+});
+test("concurrent writers publish independent complete generations", async (t) => {
+  const dir = await root(t),
+    one = call("prepare", config(dir)),
+    two = call("prepare", config(dir));
+  assert.notEqual(one.export, two.export);
+  await Promise.all([complete(one), complete(two)]);
+  const link = await fs.readlink(join(one.root, "main/current"));
+  assert.ok([one, two].some((x) => link === "complete-" + x.token));
+  call("release", one);
+  call("release", two);
+});
+test("active reader protects an older generation during collection", async (t) => {
+  const dir = await root(t),
+    one = call("prepare", config(dir));
+  const old = await complete(one);
+  call("release", one);
+  const reader = call("prepare", { ...config(dir), "write-scope": "" });
+  const two = call("prepare", config(dir));
+  await complete(two);
+  call("release", two);
+  await fs.access(old);
+  call("release", reader);
+  await assert.rejects(fs.access(old));
+});
+test("interrupted export leaves previous pointer and other writer untouched", async (t) => {
+  const dir = await root(t),
+    one = call("prepare", config(dir));
+  const old = await complete(one);
+  call("release", one);
+  const broken = call("prepare", config(dir)),
+    other = call("prepare", config(dir));
+  assert.throws(() => call("commit", broken));
+  call("release", broken);
+  await fs.access(other.export);
+  assert.equal(await fs.realpath(join(one.root, "main/current")), old);
+  call("release", other);
+});
+test("read-only scopes and path escapes cannot overwrite shared cache", async (t) => {
+  const dir = await root(t);
+  const state = call("prepare", { ...config(dir), "write-scope": "" });
+  assert.equal(call("commit", state).published, false);
+  call("release", state);
+  assert.throws(() =>
+    call("prepare", { ...config(dir), "cache-namespace": "../escape" }),
+  );
+  const evil = join(dir, "elsewhere");
+  await fs.mkdir(evil);
+  await fs.mkdir(join(dir, "example/project/main"), { recursive: true });
+  await fs.symlink(evil, join(dir, "example/project/main/current"));
+  assert.throws(() => call("prepare", config(dir)));
+});

@@ -7,10 +7,10 @@
   with:
     source: ${{ github.sha }}
     tag: v1.2.3
-    name: '1.2.3'
+    name: "1.2.3"
     notes-file: build/notes.md
     assets-file: build/assets.json
-    latest: 'false'
+    latest: "false"
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 

@@ -15,10 +15,10 @@ inputs:
     required: true
   prefix:
     description: Unique generation prefix for upload
-    default: ''
+    default: ""
   path-style:
     description: Use path-style addressing for compatible endpoints
-    default: 'true'
+    default: "true"
   access-key-id:
     description: Scoped S3 access key
     required: true
@@ -27,28 +27,28 @@ inputs:
     required: true
   session-token:
     description: Optional short-lived session token
-    default: ''
+    default: ""
   identity-file:
     description: Caller-verified repository/source/run/attempt/producer-job JSON
     required: true
   record-file:
     description: Caller-verified production record for register, download or delete
-    default: ''
+    default: ""
   directory:
     description: Local artifact source or destination directory
     default: .
   files:
     description: JSON array of explicitly allowed plain file names
-    default: '[]'
+    default: "[]"
   consumers-file:
     description: Caller-verified terminal consumer job records for delete
-    default: ''
+    default: ""
   output-file:
     description: Optional local result record path
-    default: ''
+    default: ""
   max-file-bytes:
     description: File size limit
-    default: '2147483648'
+    default: "2147483648"
 outputs:
   record:
     description: Confirmed production record, without credentials

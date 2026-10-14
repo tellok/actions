@@ -1,8 +1,90 @@
-const test=require('node:test');const assert=require('node:assert/strict');const {publish,createDockerClient}=require('../lib/publish.cjs');
-const expected={source:'a'.repeat(40),version:'1.2.3',platform:'linux/amd64',reference:'registry.test/demo:verified',imageId:'sha256:'+'b'.repeat(64),layers:['sha256:'+'c'.repeat(64)]};
-function fixture(){const calls=[],refs=new Map(),found={digest:'sha256:'+'d'.repeat(64),image:{Id:expected.imageId,Os:'linux',Architecture:'amd64',Config:{Labels:{'org.opencontainers.image.revision':expected.source,'org.opencontainers.image.version':expected.version}},RootFS:{Layers:expected.layers}}};return{calls,refs,found,docker:{lookup:async ref=>refs.get(ref),load:async()=>calls.push('load'),push:async(id,ref)=>{calls.push('push');refs.set(ref,found);},alias:async(image,digest,ref)=>{calls.push('alias');refs.set(ref,found);}}};}
-const options=f=>({archive:'verified.tar.gz',expected,image:'registry.test/demo',tags:['1.2.3','sha-'+expected.source],docker:f.docker,verify:async()=>{f.calls.push('verify');}});
-test('verified archive is loaded and published without a build',async()=>{const f=fixture();const result=await publish(options(f));assert.equal(result.digest,f.found.digest);assert.deepEqual(f.calls,['verify','load','push','alias']);});
-test('immutable conflict prevents all registry writes',async()=>{const f=fixture();f.refs.set('registry.test/demo:1.2.3',{...f.found,image:{...f.found.image,Id:'sha256:'+'e'.repeat(64)}});await assert.rejects(publish(options(f)),/conflict/);assert.deepEqual(f.calls,['verify']);});
-test('verified existing digest is reused without rebuilding or pushing',async()=>{const f=fixture();for(const tag of options(f).tags)f.refs.set('registry.test/demo:'+tag,f.found);assert.equal((await publish(options(f))).digest,f.found.digest);assert.deepEqual(f.calls,['verify']);});
-test('registry network and authentication errors are not treated as missing tags',async()=>{const client=createDockerClient({run:()=>{throw{stderr:'unauthorized: not found'};}});await assert.rejects(client.lookup('registry.test/demo:v1','linux/amd64'),/lookup failed/);});
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { publish, createDockerClient } = require("../lib/publish.cjs");
+const expected = {
+  source: "a".repeat(40),
+  version: "1.2.3",
+  platform: "linux/amd64",
+  reference: "registry.test/demo:verified",
+  imageId: "sha256:" + "b".repeat(64),
+  layers: ["sha256:" + "c".repeat(64)],
+};
+function fixture() {
+  const calls = [],
+    refs = new Map(),
+    found = {
+      digest: "sha256:" + "d".repeat(64),
+      image: {
+        Id: expected.imageId,
+        Os: "linux",
+        Architecture: "amd64",
+        Config: {
+          Labels: {
+            "org.opencontainers.image.revision": expected.source,
+            "org.opencontainers.image.version": expected.version,
+          },
+        },
+        RootFS: { Layers: expected.layers },
+      },
+    };
+  return {
+    calls,
+    refs,
+    found,
+    docker: {
+      lookup: async (ref) => refs.get(ref),
+      load: async () => calls.push("load"),
+      push: async (id, ref) => {
+        calls.push("push");
+        refs.set(ref, found);
+      },
+      alias: async (image, digest, ref) => {
+        calls.push("alias");
+        refs.set(ref, found);
+      },
+    },
+  };
+}
+const options = (f) => ({
+  archive: "verified.tar.gz",
+  expected,
+  image: "registry.test/demo",
+  tags: ["1.2.3", "sha-" + expected.source],
+  docker: f.docker,
+  verify: async () => {
+    f.calls.push("verify");
+  },
+});
+test("verified archive is loaded and published without a build", async () => {
+  const f = fixture();
+  const result = await publish(options(f));
+  assert.equal(result.digest, f.found.digest);
+  assert.deepEqual(f.calls, ["verify", "load", "push", "alias"]);
+});
+test("immutable conflict prevents all registry writes", async () => {
+  const f = fixture();
+  f.refs.set("registry.test/demo:1.2.3", {
+    ...f.found,
+    image: { ...f.found.image, Id: "sha256:" + "e".repeat(64) },
+  });
+  await assert.rejects(publish(options(f)), /conflict/);
+  assert.deepEqual(f.calls, ["verify"]);
+});
+test("verified existing digest is reused without rebuilding or pushing", async () => {
+  const f = fixture();
+  for (const tag of options(f).tags)
+    f.refs.set("registry.test/demo:" + tag, f.found);
+  assert.equal((await publish(options(f))).digest, f.found.digest);
+  assert.deepEqual(f.calls, ["verify"]);
+});
+test("registry network and authentication errors are not treated as missing tags", async () => {
+  const client = createDockerClient({
+    run: () => {
+      throw { stderr: "unauthorized: not found" };
+    },
+  });
+  await assert.rejects(
+    client.lookup("registry.test/demo:v1", "linux/amd64"),
+    /lookup failed/,
+  );
+});

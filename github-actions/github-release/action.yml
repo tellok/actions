@@ -18,16 +18,16 @@ inputs:
     required: true
   assets-file:
     description: JSON array of local path/name/hash asset entries
-    default: ''
+    default: ""
   body-start:
     description: Managed release notes opening marker
-    default: '<!-- ci-toolkit:release:start -->'
+    default: "<!-- ci-toolkit:release:start -->"
   body-end:
     description: Managed release notes closing marker
-    default: '<!-- ci-toolkit:release:end -->'
+    default: "<!-- ci-toolkit:release:end -->"
   latest:
     description: Explicit caller-verified Latest promotion; recovery always ignores this
-    default: 'false'
+    default: "false"
   github-token:
     description: Token scoped to the caller's release repository
     default: ${{ github.token }}
