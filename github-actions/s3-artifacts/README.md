@@ -22,6 +22,8 @@ identity-file：`{"repository":"example/app","source":"<40-char-sha>","run":1,"a
 
 upload 使用 If-None-Match:\*，不会覆盖冲突对象；响应未知时以 SHA-256 回读确认。download 校验完整字节后原子替换，下载失败保留原文件并删除自己的 partial。仅 404 表示不存在；权限/网络错误失败，不误作不存在。允许大小默认单文件 2 GiB。SDK 只在只读请求网络/暂时错误时重试，不盲目重试未知写入。
 
-delete 需要 record-file 与 consumers-file（`[{"id":20,"status":"completed"}]`）；先核对对象大小与生产身份 Metadata，再按 ETag 条件删除并确认不存在。调用方必须从可信 CI API 核实生产登记和消费者终态，不应接受 PR 任意生成的删除许可。旧格式对象缺少 Metadata 时不会删除。使用的服务须支持 S3 条件写/删除，否则失败，不降级成无条件覆盖。register 只回读既有对象，不重新上传。
+delete 需要 record-file 与 consumers-file（`[{"id":20,"status":"completed"}]`）；先核对对象大小与生产身份 Metadata，再发送 ETag 条件删除请求并确认不存在。调用方必须从可信 CI API 核实生产登记和消费者终态，不应接受 PR 任意生成的删除许可。旧格式对象缺少 Metadata 时不会删除。register 只回读既有对象，不重新上传。
+
+服务必须实际执行 S3 条件写/删除语义，调用方应在启用前核实；部分 S3 兼容服务会忽略条件头并返回成功，客户端无法仅凭正常响应识别这种情况。SDK 发送 If-Match/If-None-Match 不等于服务端已经提供并发保护。每个生产任务必须使用独占前缀，不可让不同生产者共享对象键；需要并发条件保证时，不得依赖未经核实的兼容实现。服务明确返回不支持或权限错误时失败，不移除条件头重试。
 
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
