@@ -259,6 +259,16 @@ class Transfer {
           /* A conditional or unknown write is accepted only after exact read-back below. */
         }
       }
+      const head = await this.head(object.key);
+      if (
+        !head ||
+        head.ContentLength !== size ||
+        head.Metadata?.sha256 !== object.hash ||
+        ["repository", "source", "run", "attempt", "job"].some(
+          (key) => head.Metadata?.[key] !== String(identity[key]),
+        )
+      )
+        throw new Error("S3 upload producer identity or size mismatch");
       const temp = resolve(root, ".verify-" + randomUUID());
       try {
         await this.read(object.key, temp, object);
@@ -322,7 +332,11 @@ class Transfer {
           );
         if (
           head.ContentLength !== object.size ||
-          (!metadataMatches && !allowLegacyMetadata)
+          (!metadataMatches &&
+            (!allowLegacyMetadata ||
+              ["sha256", "repository", "source", "run", "attempt", "job"].some(
+                (key) => head.Metadata?.[key] !== undefined,
+              )))
         )
           throw new Error("S3 object no longer matches its producer identity");
         if (!metadataMatches) {
@@ -333,6 +347,8 @@ class Transfer {
             await fs.rm(path, { force: true });
           }
         }
+        if (typeof head.ETag !== "string" || !head.ETag)
+          throw new Error("S3 delete requires a confirmed ETag");
         try {
           await this.request(
             new DeleteObjectCommand({
