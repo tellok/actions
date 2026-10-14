@@ -16,4 +16,4 @@
 
 [GitLab 目录](gitlab-actions/) 暂未实现，不承诺 Steps/Components 接口。没有通用 deploy 组件或完整可复用工作流。
 
-Git 依赖的消费路径直接使用已提交的 dist；维护者打包命令为 `pnpm bundle`，不使用会触发 Git 依赖自动构建的 prepare/build/postinstall 生命周期。
+程序化消费使用固定提交的 codeload tarball URL 并提交锁文件，直接读取 dist。pnpm 对 Git 来源可能执行准备安装；因此不要求调用方使用 Git 来源。维护者打包命令为 `pnpm bundle`。

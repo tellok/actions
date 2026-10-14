@@ -30,3 +30,5 @@ PR 写入使用社区维护的 [create-pull-request](https://github.com/peter-ev
 maintain 需要可信目标分支事件、干净 checkout、contents:write 和 pull-requests:write。detect 只读。Changeset 消费是否合法、来源证明与发布资格由调用方负责。GITHUB_TOKEN 创建的 PR 不保证触发另一个 workflow；需要原生触发时由调用方选择已授权 App token。组件不会额外 dispatch 检查。
 
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
+
+使用 GITHUB_TOKEN 写入 PR 还需仓库允许 Actions 创建 PR；默认工作流权限可继续只读，只给 maintain job 显式内容与 PR 写权限。组件不会修改仓库开关。
