@@ -139,6 +139,10 @@ async function prepare({ inputs, github, context }) {
     process.env.GITHUB_WORKSPACE || process.cwd(),
     inputs.path || ".",
   );
+  if ((await fs.realpath(cwd)) !== git(cwd, "rev-parse", "--show-toplevel"))
+    throw new Error(
+      "path must point to the checkout repository root; use changeset-directory and version-command for a nested workspace",
+    );
   const pending = await detect(
     cwd,
     inputs["changeset-directory"] || ".changeset",
