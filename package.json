@@ -7,9 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "node build.cjs",
     "test": "node --test github-actions/*/tests/*.test.cjs",
-    "check": "node check.cjs"
+    "check": "node check.cjs",
+    "bundle": "node build.cjs"
   },
   "exports": {
     "./s3-artifacts": "./github-actions/s3-artifacts/dist/index.js",
