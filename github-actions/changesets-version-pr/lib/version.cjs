@@ -439,7 +439,9 @@ async function restore(state) {
   else {
     try {
       git(state.cwd, "config", "--local", "--unset-all", "core.hooksPath");
-    } catch {}
+    } catch (error) {
+      if (error.status !== 5) throw error;
+    }
   }
   await fs.rm(state.temp, { recursive: true, force: true });
 }

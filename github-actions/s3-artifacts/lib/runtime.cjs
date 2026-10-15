@@ -115,13 +115,28 @@ async function canonicalPath(path) {
     return resolve(await canonicalPath(dirname(absolute)), basename(absolute));
   }
 }
+async function statIfPresent(path) {
+  try {
+    return await fs.stat(path);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
 async function validateOutputPath(record, directory, outputFile) {
   if (!outputFile) return;
   const output = await canonicalPath(outputFile);
-  for (const object of record.objects)
-    if (output === (await canonicalPath(resolve(directory, object.name))))
-      throw new Error("Result output-file collides with a downloaded artifact");
+  const outputEntry = await statIfPresent(output);
+  for (const object of record.objects) {
+    const target = await canonicalPath(resolve(directory, object.name));
+    const entry = outputEntry && (await statIfPresent(target));
+    if (
+      output === target ||
+      (entry && entry.dev === outputEntry.dev && entry.ino === outputEntry.ino)
+    )
+      throw new Error("Result output-file collides with an artifact");
+  }
 }
+
 function createClient(config) {
   const endpoint = new URL(config.endpoint);
   if (
@@ -245,7 +260,13 @@ class Transfer {
       throw new Error("S3 artifact bytes do not match their record");
     }
   }
-  async upload({ identity, prefix: objectPrefix, directory, files }) {
+  async upload({
+    identity,
+    prefix: objectPrefix,
+    directory,
+    files,
+    outputFile,
+  }) {
     validateIdentity(identity);
     prefix(objectPrefix);
     if (
@@ -284,6 +305,11 @@ class Transfer {
       };
       prepared.push({ source, object });
     }
+    await validateOutputPath(
+      { objects: prepared.map(({ object }) => object) },
+      root,
+      outputFile,
+    );
     for (const { source, object } of prepared) {
       const { size } = object;
       if (!(await this.head(object.key))) {
@@ -489,6 +515,7 @@ async function run({ inputs, core }) {
       prefix: inputs.prefix,
       directory: inputs.directory,
       files: JSON.parse(inputs.files),
+      outputFile: inputs["output-file"],
     });
   else {
     const record = JSON.parse(await fs.readFile(inputs["record-file"], "utf8"));

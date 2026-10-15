@@ -487,3 +487,88 @@ for (const kind of [
     assert.equal(f.objects.size, 0);
   });
 }
+
+for (const alias of ["direct", "symlink", "directory-symlink", "hardlink"]) {
+  test(`upload rejects ${alias} output/source collisions before S3 access`, async (t) => {
+    const f = await fixture(t);
+    let outputFile = join(f.dir, "image.bin");
+    if (alias === "symlink") {
+      outputFile = join(f.dir, "record.json");
+      await fs.symlink("image.bin", outputFile);
+    } else if (alias === "hardlink") {
+      outputFile = join(f.dir, "record.json");
+      await fs.link(join(f.dir, "image.bin"), outputFile);
+    } else if (alias === "directory-symlink") {
+      await fs.symlink(f.dir, join(f.dir, "alias"));
+      outputFile = join(f.dir, "alias", "image.bin");
+    }
+    await assert.rejects(
+      f.transfer.upload({
+        identity,
+        prefix: "build/1/1/10",
+        directory: f.dir,
+        files: ["image.bin"],
+        outputFile,
+      }),
+      /collides/,
+    );
+    assert.deepEqual(f.calls, []);
+    assert.equal(
+      await fs.readFile(join(f.dir, "image.bin"), "utf8"),
+      "image bytes",
+    );
+  });
+}
+test("public upload rejects a result path over its source before transfer", async (t) => {
+  const f = await fixture(t);
+  const identityFile = join(f.dir, "identity.json");
+  await fs.writeFile(identityFile, JSON.stringify(identity));
+  const { run } = require(
+    process.env.TOOLKIT_TEST_DIST === "true"
+      ? "../dist/index.js"
+      : "../lib/runtime.cjs",
+  );
+  await assert.rejects(
+    run({
+      inputs: {
+        operation: "upload",
+        endpoint: "http://127.0.0.1:9",
+        region: "test",
+        bucket: "test-bucket",
+        "access-key-id": "test-key",
+        "secret-access-key": "test-secret",
+        "identity-file": identityFile,
+        directory: f.dir,
+        prefix: "build/1/1/10",
+        files: '["image.bin"]',
+        "output-file": join(f.dir, "image.bin"),
+      },
+      core: {
+        setSecret() {},
+        setOutput() {
+          throw new Error("Unexpected success");
+        },
+      },
+    }),
+    /collides/,
+  );
+  assert.equal(
+    await fs.readFile(join(f.dir, "image.bin"), "utf8"),
+    "image bytes",
+  );
+});
+test("upload accepts a separate result path without changing the source", async (t) => {
+  const f = await fixture(t);
+  const record = await f.transfer.upload({
+    identity,
+    prefix: "build/1/1/10",
+    directory: f.dir,
+    files: ["image.bin"],
+    outputFile: join(f.dir, "record.json"),
+  });
+  assert.equal(record.objects.length, 1);
+  assert.equal(
+    await fs.readFile(join(f.dir, "image.bin"), "utf8"),
+    "image bytes",
+  );
+});

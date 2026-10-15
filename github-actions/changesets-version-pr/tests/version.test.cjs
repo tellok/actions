@@ -530,3 +530,55 @@ test("multiple PR candidates appearing after preflight are rejected", async (t) 
   );
   await assert.rejects(fs.access(state.bodyPath), { code: "ENOENT" });
 });
+
+async function hookState(t, oldHooks = "") {
+  const cwd = await fs.mkdtemp(join(tmpdir(), "restore-hooks-"));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const { execFileSync } = require("node:child_process");
+  const git = (...args) =>
+    execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  git("init", "-q");
+  const temp = join(cwd, "temporary"),
+    hooks = join(temp, "hooks");
+  await fs.mkdir(hooks, { recursive: true });
+  await fs.writeFile(join(hooks, "pre-push"), "temporary lease hook");
+  git("config", "--local", "core.hooksPath", hooks);
+  return { state: { cwd, temp, oldHooks }, hooks, git };
+}
+for (const oldHooks of ["", "original-hooks"]) {
+  test(`failed hooks ${oldHooks ? "restoration" : "removal"} is reported and retains the temporary hook`, async (t) => {
+    const { state, hooks, git } = await hookState(t, oldHooks);
+    await fs.writeFile(
+      join(state.cwd, ".git", "config.lock"),
+      "held by another git process",
+    );
+    await assert.rejects(
+      require("../lib/version.cjs").restore(state),
+      /Command failed/,
+    );
+    assert.equal(git("config", "--local", "--get", "core.hooksPath"), hooks);
+    assert.equal(
+      await fs.readFile(join(hooks, "pre-push"), "utf8"),
+      "temporary lease hook",
+    );
+    await fs.rm(join(state.cwd, ".git", "config.lock"));
+    await require("../lib/version.cjs").restore(state);
+    await assert.rejects(fs.access(state.temp), { code: "ENOENT" });
+    if (oldHooks)
+      assert.equal(
+        git("config", "--local", "--get", "core.hooksPath"),
+        oldHooks,
+      );
+    else
+      assert.throws(
+        () => git("config", "--local", "--get", "core.hooksPath"),
+        (e) => e.status === 1,
+      );
+  });
+}
+test("an already absent hooks setting allows cleanup", async (t) => {
+  const { state, git } = await hookState(t);
+  git("config", "--local", "--unset-all", "core.hooksPath");
+  await require("../lib/version.cjs").restore(state);
+  await assert.rejects(fs.access(state.temp), { code: "ENOENT" });
+});
