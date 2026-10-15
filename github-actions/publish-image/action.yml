@@ -1,0 +1,68 @@
+name: Publish verified image
+description: Publish an explicitly verified Docker archive without rebuilding it
+inputs:
+  archive:
+    description: Gzip compressed Docker image archive
+    required: true
+  identity-file:
+    description: JSON with source, version, platform, reference, imageId and optional layers/archiveHash/archiveSize
+    required: true
+  image:
+    description: Registry image repository without a tag
+    required: true
+  tags:
+    description: JSON array of destination tags
+    required: true
+  existing-policy:
+    description: exact reuses identical image ID; source permits reusing the verified same source/version/platform image
+    default: exact
+  registry:
+    description: Registry hostname
+    required: true
+  username:
+    description: Registry username
+    required: true
+  password:
+    description: Registry token or password
+    required: true
+outputs:
+  digest:
+    description: Confirmed registry digest
+    value: ${{ steps.publish.outputs.digest }}
+  image-id:
+    description: Published image configuration digest
+    value: ${{ steps.publish.outputs.imageId }}
+runs:
+  using: composite
+  steps:
+    - name: Validate the publication registry
+      id: registry
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_REGISTRY: ${{ inputs.registry }}
+        TOOLKIT_IMAGE: ${{ inputs.image }}
+      with:
+        script: |
+          const registry = require(process.env.TOOLKIT_ACTION_PATH+'/lib/publish.cjs').validateRegistry(process.env.TOOLKIT_REGISTRY, process.env.TOOLKIT_IMAGE);
+          core.setOutput('registry', registry);
+    - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+      with:
+        registry: ${{ steps.registry.outputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      with:
+        cache-binary: false
+    - id: publish
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_INPUTS: ${{ toJSON(inputs) }}
+      with:
+        script: |
+          const input = JSON.parse(process.env.TOOLKIT_INPUTS);
+          core.setSecret(input.password);
+          const expected = JSON.parse(await require('node:fs/promises').readFile(input['identity-file'],'utf8'));
+          const result = await require(process.env.TOOLKIT_ACTION_PATH+'/lib/publish.cjs').publish({archive:input.archive,expected,image:input.image,tags:JSON.parse(input.tags),existingPolicy:input['existing-policy'],registry:input.registry});
+          for(const [key,value] of Object.entries(result)) core.setOutput(key,value);

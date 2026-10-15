@@ -1,0 +1,70 @@
+name: S3 artifact transfer
+description: Transfer explicitly registered artifacts with the standard AWS S3 SDK and verify their exact bytes
+inputs:
+  operation:
+    description: upload, register, download or delete
+    required: true
+  endpoint:
+    description: Caller-provided S3 endpoint
+    required: true
+  region:
+    description: S3 signing region
+    required: true
+  bucket:
+    description: Bucket allowed by the caller's scoped credentials
+    required: true
+  prefix:
+    description: Unique generation prefix for upload
+    default: ""
+  path-style:
+    description: Use path-style addressing for compatible endpoints
+    default: "true"
+  access-key-id:
+    description: Scoped S3 access key
+    required: true
+  secret-access-key:
+    description: Scoped S3 secret
+    required: true
+  session-token:
+    description: Optional short-lived session token
+    default: ""
+  identity-file:
+    description: Caller-verified repository/source/run/attempt/producer-job JSON
+    required: true
+  record-file:
+    description: Caller-verified production record for register, download or delete
+    default: ""
+  directory:
+    description: Local artifact source or destination directory
+    default: .
+  files:
+    description: JSON array of explicitly allowed plain file names
+    default: "[]"
+  consumers-file:
+    description: Caller-verified terminal consumer job records for delete
+    default: ""
+  output-file:
+    description: Optional local result record path
+    default: ""
+  max-file-bytes:
+    description: File size limit
+    default: "2147483648"
+outputs:
+  record:
+    description: Confirmed production record, without credentials
+    value: ${{ steps.transfer.outputs.record }}
+  deleted:
+    description: Number of objects confirmed absent after deletion
+    value: ${{ steps.transfer.outputs.deleted }}
+runs:
+  using: composite
+  steps:
+    - name: Execute standard S3 transfer with integrity checks
+      id: transfer
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_INPUTS: ${{ toJSON(inputs) }}
+      with:
+        script: |
+          await require(process.env.TOOLKIT_ACTION_PATH+'/dist/index.js').run({inputs:JSON.parse(process.env.TOOLKIT_INPUTS),core});

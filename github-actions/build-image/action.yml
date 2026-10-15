@@ -1,0 +1,140 @@
+name: Build and load image
+description: Build with the official Docker actions and optional persistent local cache generations
+inputs:
+  context:
+    description: Explicit checked-out build context
+    default: .
+  file:
+    description: Dockerfile path
+    default: Dockerfile
+  tags:
+    description: Newline-separated local image tags
+    required: true
+  labels:
+    description: Caller-provided OCI labels
+    default: ""
+  platforms:
+    description: Exactly one build platform (os/arch[/variant]); empty uses builder platform
+    default: ""
+  build-args:
+    description: Newline-separated Docker build arguments
+    default: ""
+  target:
+    description: Optional build target
+    default: ""
+  pull:
+    description: Pull referenced base images
+    default: "true"
+  cache-root:
+    description: Optional persistent cache root; supplied and mounted by the runner operator
+    default: ""
+  cache-namespace:
+    description: Cache namespace inside cache-root
+    default: ${{ github.repository }}
+  read-scopes:
+    description: Whitespace-separated cache scopes allowed for imports
+    default: ""
+  write-scope:
+    description: Scope allowed for this export; empty is read-only
+    default: ""
+  max-generation-bytes:
+    description: Maximum new cache generation size; zero disables this bound
+    default: "0"
+  max-total-bytes:
+    description: Maximum bytes under cache-root before publishing a new generation
+    default: "0"
+  keep-generations:
+    description: Minimum recent complete generations retained per scope
+    default: "2"
+outputs:
+  image-id:
+    description: Docker image ID loaded for the caller's acceptance tests
+    value: ${{ steps.build.outputs.imageid }}
+  metadata:
+    description: Official Buildx build metadata
+    value: ${{ steps.build.outputs.metadata }}
+  cache-published:
+    description: Whether a complete local cache generation was published
+    value: ${{ steps.cache_commit.outputs.published }}
+runs:
+  using: composite
+  steps:
+    - name: Acquire cache reader leases and prepare an independent export
+      id: cache
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_INPUTS: ${{ toJSON(inputs) }}
+      with:
+        script: |
+          const fs = require('node:fs/promises');
+          const path = require('node:path');
+          const input = JSON.parse(process.env.TOOLKIT_INPUTS);
+          input.execution = `${context.repo.owner}/${context.repo.repo}/${context.runId}/${process.env.GITHUB_RUN_ATTEMPT}/${context.job}`;
+          const result = JSON.parse(require('node:child_process').execFileSync('python3', [path.join(process.env.TOOLKIT_ACTION_PATH,'lib/cache.py'),'prepare'], {input:JSON.stringify(input),encoding:'utf8'}));
+          let directory;
+          try {
+            directory = await fs.mkdtemp(path.join(process.env.RUNNER_TEMP,'ci-cache-'));
+            const state = path.join(directory,'state.json');
+            await fs.writeFile(state,JSON.stringify(result),{mode:0o600});
+            core.setOutput('state',state); core.setOutput('imports',result.imports);
+            core.setOutput('export',result.export ? `type=local,dest=${result.export},mode=max` : '');
+          } catch (error) {
+            const errors = [error];
+            try {
+              require('node:child_process').execFileSync('python3',[path.join(process.env.TOOLKIT_ACTION_PATH,'lib/cache.py'),'release'],{input:JSON.stringify(result),encoding:'utf8'});
+            } catch (cleanupError) { errors.push(cleanupError); }
+            if (directory) {
+              try { await fs.rm(directory,{recursive:true,force:true}); }
+              catch (cleanupError) { errors.push(cleanupError); }
+            }
+            if (errors.length > 1) throw new AggregateError(errors,'Cache state persistence and cleanup failed');
+            throw error;
+          }
+    - name: Prepare official Buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      with:
+        cache-binary: false
+    - name: Build and load the acceptance image
+      id: build
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
+        DOCKER_BUILD_SUMMARY: "false"
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
+        platforms: ${{ inputs.platforms }}
+        build-args: ${{ inputs.build-args }}
+        target: ${{ inputs.target }}
+        pull: ${{ inputs.pull }}
+        load: true
+        push: false
+        cache-from: ${{ steps.cache.outputs.imports }}
+        cache-to: ${{ steps.cache.outputs.export }}
+    - name: Publish only a complete cache generation
+      id: cache_commit
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_STATE: ${{ steps.cache.outputs.state }}
+      with:
+        script: |
+          const state = await require('node:fs/promises').readFile(process.env.TOOLKIT_STATE,'utf8');
+          const result = JSON.parse(require('node:child_process').execFileSync('python3',[process.env.TOOLKIT_ACTION_PATH+'/lib/cache.py','commit'],{input:state,encoding:'utf8'}));
+          core.setOutput('published',String(result.published));
+          if (result.reason === 'capacity-limit') core.warning('Cache capacity limit reached; the previous generation remains available.');
+    - name: Release this build's reader leases and incomplete export
+      if: always() && steps.cache.outputs.state != ''
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        TOOLKIT_ACTION_PATH: ${{ github.action_path }}
+        TOOLKIT_STATE: ${{ steps.cache.outputs.state }}
+      with:
+        script: |
+          const fs = require('node:fs/promises');
+          const state = await fs.readFile(process.env.TOOLKIT_STATE,'utf8');
+          require('node:child_process').execFileSync('python3',[process.env.TOOLKIT_ACTION_PATH+'/lib/cache.py','release'],{input:state,encoding:'utf8'});
+          await fs.rm(require('node:path').dirname(process.env.TOOLKIT_STATE),{recursive:true,force:true});
