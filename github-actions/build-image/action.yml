@@ -14,7 +14,7 @@ inputs:
     description: Caller-provided OCI labels
     default: ""
   platforms:
-    description: Build platforms; empty uses the builder platform
+    description: Exactly one build platform (os/arch[/variant]); empty uses builder platform
     default: ""
   build-args:
     description: Newline-separated Docker build arguments

@@ -15,6 +15,8 @@ async function hashFile(path) {
 }
 
 function managedBody(previous, content, start, end) {
+  if (content.includes(start) || content.includes(end))
+    throw new Error("Release notes must not contain managed markers");
   const a = previous.split(start).length - 1,
     b = previous.split(end).length - 1;
   const block = `${start}\n${content}\n${end}`;
@@ -252,9 +254,9 @@ function validate(options) {
 }
 
 async function confirmAsset(api, asset, file, tempRoot) {
-  if (asset.state !== "uploaded" || asset.size !== (await fs.stat(file)).size)
+  if (asset.state !== "uploaded" || asset.size !== file.size)
     throw new Error("Release asset size/state conflict");
-  const digest = await hashFile(file);
+  const digest = file.hash;
   if (asset.digest) {
     if (asset.digest !== digest)
       throw new Error("Release asset digest conflict");
@@ -285,12 +287,23 @@ async function ensureRelease({
 }) {
   const options = { source, tag, name, start, end };
   validate(options);
+  if (!["draft", "publish", "recover"].includes(operation))
+    throw new Error("Unknown release operation");
+  // Validate caller notes and the complete manifest before any remote writes.
+  managedBody("", notes, start, end);
   if (
     !Array.isArray(files) ||
     new Set(files.map((f) => f.name)).size !== files.length
   )
     throw new Error("Explicit unique release assets are required");
+  if (operation !== "draft" && !files.length)
+    throw new Error("Publication requires a nonempty explicit asset list");
+  files = files.map((file) => ({ ...file }));
   for (const file of files) {
+    if (!/^sha256:[a-f0-9]{64}$/.test(file.hash || ""))
+      throw new Error(
+        "Every release asset requires a valid declared SHA-256 hash",
+      );
     if (
       !file.name ||
       basename(file.name) !== file.name ||
@@ -301,13 +314,16 @@ async function ensureRelease({
     const size = (await fs.stat(file.path)).size;
     if (size < 1 || size >= 2 * 1024 ** 3)
       throw new Error("Release asset exceeds the service limit");
-    if (file.hash && (await hashFile(file.path)) !== file.hash)
+    if ((await hashFile(file.path)) !== file.hash)
       throw new Error("Local release asset hash mismatch");
+    file.size = size;
   }
   let actualTag = await api.getTag(tag);
   if (actualTag && actualTag !== source)
     throw new Error("Release tag points to another source");
   let release = await api.getRelease(tag);
+  if (operation === "draft" && release && !release.draft)
+    throw new Error("Draft operation cannot modify a published release");
   if (operation === "recover" && (!actualTag || !release))
     throw new Error("Recovery requires an existing verified release");
   if (!actualTag) {
@@ -332,7 +348,7 @@ async function ensureRelease({
             : ""),
       );
   }
-  const body = managedBody(release?.body || "", notes, start, end);
+  let body = managedBody(release?.body || "", notes, start, end);
   if (!release) {
     try {
       release = await api.createRelease({
@@ -360,6 +376,9 @@ async function ensureRelease({
     release.target_commitish !== source
   )
     throw new Error("Release ID identity mismatch");
+  if (operation === "draft" && !release.draft)
+    throw new Error("Draft operation cannot modify a published release");
+  body = managedBody(release.body || "", notes, start, end);
   if (release.body !== body) {
     await api.updateRelease(id, { body });
     release = await api.getReleaseById(id);
@@ -368,8 +387,6 @@ async function ensureRelease({
   }
   if (operation === "draft")
     return { id, url: release.html_url, published: !release.draft };
-  if (!files.length)
-    throw new Error("Publication requires a nonempty explicit asset list");
   for (const file of files) {
     const existing = (await api.listAssets(id)).filter(
       (asset) => asset.name === file.name,
@@ -389,8 +406,23 @@ async function ensureRelease({
         throw new Error("Release asset upload is unconfirmed");
       asset = reread[0];
     }
-    await confirmAsset(api, asset, file.path, tempRoot);
+    await confirmAsset(api, asset, file, tempRoot);
   }
+  const confirmTag = async () => {
+    if ((await api.getTag(tag)) !== source)
+      throw new Error("Release tag changed during publication");
+  };
+  const confirmAssets = async () => {
+    const assets = await api.listAssets(id);
+    for (const file of files) {
+      const matching = assets.filter((asset) => asset.name === file.name);
+      if (matching.length !== 1)
+        throw new Error("Declared release asset set changed");
+      await confirmAsset(api, matching[0], file, tempRoot);
+    }
+  };
+  await confirmAssets();
+  await confirmTag();
   if (release.draft) {
     try {
       await api.publishRelease(id);
@@ -406,6 +438,17 @@ async function ensureRelease({
     if ((await api.getLatest()).id !== id)
       throw new Error("Latest promotion is unconfirmed");
   }
+  release = await api.getReleaseById(id);
+  if (
+    !release ||
+    release.id !== id ||
+    release.draft ||
+    release.tag_name !== tag ||
+    release.target_commitish !== source
+  )
+    throw new Error("Published release identity changed");
+  await confirmAssets();
+  await confirmTag();
   return { id, url: release.html_url, published: true };
 }
 

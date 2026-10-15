@@ -4,11 +4,11 @@ const fs = require("node:fs/promises");
 const { join } = require("node:path");
 const { tmpdir } = require("node:os");
 const { Readable } = require("node:stream");
-const {
-  Transfer,
-  createClient,
-  validateRecord,
-} = require("../lib/runtime.cjs");
+const { Transfer, createClient, validateRecord } = require(
+  process.env.TOOLKIT_TEST_DIST === "true"
+    ? "../dist/index.js"
+    : "../lib/runtime.cjs",
+);
 const identity = {
   repository: "example/app",
   source: "a".repeat(40),
@@ -182,4 +182,218 @@ test("unknown deletion is confirmed but permission failure is never absence", as
   );
   f.state.denied = true;
   await assert.rejects(f.transfer.head("x"), /403/);
+});
+
+test("later artifact failure leaves every previous destination unchanged", async (t) => {
+  const f = await fixture(t);
+  await fs.writeFile(join(f.dir, "manifest.json"), "new manifest");
+  const record = await f.transfer.upload({
+    identity,
+    prefix: "build/1/1/10",
+    directory: f.dir,
+    files: ["image.bin", "manifest.json"],
+  });
+  const out = join(f.dir, "out");
+  await fs.mkdir(out);
+  await fs.writeFile(join(out, "image.bin"), "old image");
+  await fs.writeFile(join(out, "manifest.json"), "old manifest");
+  f.objects.get(record.objects[1].key).bytes = Buffer.from("bad manifest");
+  await assert.rejects(
+    f.transfer.download(record, {
+      identity,
+      directory: out,
+      allowedFiles: ["image.bin", "manifest.json"],
+    }),
+    /bytes do not match/,
+  );
+  assert.equal(await fs.readFile(join(out, "image.bin"), "utf8"), "old image");
+  assert.equal(
+    await fs.readFile(join(out, "manifest.json"), "utf8"),
+    "old manifest",
+  );
+  assert.deepEqual((await fs.readdir(out)).sort(), [
+    "image.bin",
+    "manifest.json",
+  ]);
+});
+test("existing identical bytes with missing or conflicting producer metadata cannot register as a new upload", async (t) => {
+  for (const metadata of [{}, { repository: "other/repo" }]) {
+    const f = await fixture(t),
+      record = await f.upload();
+    f.objects.get(record.objects[0].key).meta = metadata;
+    await assert.rejects(f.upload(), /producer identity/);
+    assert.equal(f.calls.filter((x) => x === "PutObjectCommand").length, 1);
+  }
+});
+test("missing or whitespace ETag never causes an unconditional delete", async (t) => {
+  for (const etag of [undefined, "", "   "]) {
+    const f = await fixture(t),
+      record = await f.upload();
+    const original = f.transfer.client.send;
+    f.transfer.client.send = async (command) => {
+      const response = await original(command);
+      if (command.constructor.name === "HeadObjectCommand")
+        response.ETag = etag;
+      return response;
+    };
+    await assert.rejects(
+      f.transfer.remove(record, {
+        identity,
+        consumers: [{ id: 20, status: "completed" }],
+      }),
+      /ETag/,
+    );
+    assert.equal(f.calls.includes("DeleteObjectCommand"), false);
+  }
+});
+test("invalid per-file limits fail before transferring any bytes", () => {
+  for (const maxBytes of [
+    NaN,
+    Infinity,
+    0,
+    -1,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])
+    assert.throws(() => new Transfer({ maxBytes }), /positive safe integer/);
+});
+test("result file cannot alias a download target through paths or symlinks", async (t) => {
+  const f = await fixture(t),
+    record = await f.upload();
+  const { validateOutputPath } = require(
+    process.env.TOOLKIT_TEST_DIST === "true"
+      ? "../dist/index.js"
+      : "../lib/runtime.cjs",
+  );
+  await assert.rejects(
+    validateOutputPath(record, f.dir, join(f.dir, "image.bin")),
+    /collides/,
+  );
+  await fs.symlink(join(f.dir, "image.bin"), join(f.dir, "result.json"));
+  await assert.rejects(
+    validateOutputPath(record, f.dir, join(f.dir, "result.json")),
+    /collides/,
+  );
+  await fs.symlink(f.dir, join(f.dir, "alias"));
+  await assert.rejects(
+    validateOutputPath(
+      record,
+      join(f.dir, "new"),
+      join(f.dir, "alias/new/image.bin"),
+    ),
+    /collides/,
+  );
+  await validateOutputPath(record, f.dir, join(f.dir, "record.json"));
+});
+test("versioned uploads retain and delete only their recorded version", async (t) => {
+  const f = await fixture(t),
+    commands = [],
+    versions = new Map();
+  const send = f.transfer.client.send;
+  f.transfer.client.send = async (command) => {
+    const { VersionId, Key } = command.input,
+      name = command.constructor.name;
+    commands.push(command);
+    if (VersionId) {
+      const item = versions.get(VersionId);
+      if (!item) throw { $metadata: { httpStatusCode: 404 } };
+      if (name === "HeadObjectCommand")
+        return {
+          ContentLength: item.bytes.length,
+          Metadata: item.meta,
+          ETag: "etag",
+          VersionId,
+        };
+      if (name === "GetObjectCommand")
+        return {
+          ContentLength: item.bytes.length,
+          VersionId,
+          Body: Readable.from([item.bytes]),
+        };
+      if (name === "DeleteObjectCommand") {
+        versions.delete(VersionId);
+        return {};
+      }
+    }
+    const response = await send(command);
+    if (name === "PutObjectCommand")
+      versions.set("version-1", f.objects.get(Key));
+    if (name === "HeadObjectCommand" || name === "GetObjectCommand")
+      response.VersionId = "version-1";
+    return response;
+  };
+  const record = await f.upload();
+  assert.equal(record.objects[0].versionId, "version-1");
+  f.objects.set(record.objects[0].key, {
+    bytes: Buffer.from("new version"),
+    meta: {},
+  });
+  await f.transfer.remove(record, {
+    identity,
+    consumers: [{ id: 20, status: "completed" }],
+  });
+  assert.equal(versions.has("version-1"), false);
+  assert.equal(f.objects.has(record.objects[0].key), true);
+  assert.equal(
+    commands.find((c) => c.constructor.name === "DeleteObjectCommand").input
+      .VersionId,
+    "version-1",
+  );
+});
+test("legacy unversioned record cannot delete a versioned object", async (t) => {
+  const f = await fixture(t),
+    record = await f.upload(),
+    send = f.transfer.client.send;
+  f.transfer.client.send = async (command) => ({
+    ...(await send(command)),
+    VersionId: "new-version",
+  });
+  await assert.rejects(
+    f.transfer.remove(record, {
+      identity,
+      consumers: [{ id: 20, status: "completed" }],
+    }),
+    /recorded object version/,
+  );
+  assert.equal(f.calls.includes("DeleteObjectCommand"), false);
+});
+
+test("replacement failure rolls earlier destination files back", async (t) => {
+  const f = await fixture(t);
+  await fs.writeFile(join(f.dir, "manifest.json"), "new manifest");
+  const record = await f.transfer.upload({
+    identity,
+    prefix: "build/1/1/10",
+    directory: f.dir,
+    files: ["image.bin", "manifest.json"],
+  });
+  const out = join(f.dir, "out");
+  await fs.mkdir(join(out, "manifest.json"), { recursive: true });
+  await fs.writeFile(join(out, "image.bin"), "old image");
+  await assert.rejects(
+    f.transfer.download(record, {
+      identity,
+      directory: out,
+      allowedFiles: ["image.bin", "manifest.json"],
+    }),
+    /regular file/,
+  );
+  assert.equal(await fs.readFile(join(out, "image.bin"), "utf8"), "old image");
+  assert.deepEqual((await fs.readdir(out)).sort(), [
+    "image.bin",
+    "manifest.json",
+  ]);
+});
+test("unknown PUT outcome with wrong producer metadata is rejected", async (t) => {
+  const f = await fixture(t),
+    send = f.transfer.client.send;
+  f.transfer.client.send = async (command) => {
+    const response = await send(command);
+    if (command.constructor.name === "PutObjectCommand") {
+      f.objects.get(command.input.Key).meta = {};
+      throw new Error("unknown PUT outcome");
+    }
+    return response;
+  };
+  await assert.rejects(f.upload(), /producer identity/);
 });

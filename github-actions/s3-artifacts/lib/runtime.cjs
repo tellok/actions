@@ -81,7 +81,11 @@ function validateRecord(record, expected) {
       object.key !== record.prefix + "/" + object.name ||
       !DIGEST.test(object.hash) ||
       !Number.isSafeInteger(object.size) ||
-      object.size < 1
+      object.size < 1 ||
+      (object.versionId !== undefined &&
+        (typeof object.versionId !== "string" ||
+          !object.versionId.trim() ||
+          /[\r\n]/.test(object.versionId)))
     )
       throw new Error("Invalid, duplicate, or out-of-scope artifact object");
     seen.add(object.name);
@@ -89,6 +93,27 @@ function validateRecord(record, expected) {
   return record;
 }
 
+function positiveLimit(value) {
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error("max-file-bytes must be a positive safe integer");
+  return value;
+}
+async function canonicalPath(path) {
+  const absolute = resolve(path);
+  try {
+    return await fs.realpath(absolute);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return resolve(await canonicalPath(dirname(absolute)), basename(absolute));
+  }
+}
+async function validateOutputPath(record, directory, outputFile) {
+  if (!outputFile) return;
+  const output = await canonicalPath(outputFile);
+  for (const object of record.objects)
+    if (output === (await canonicalPath(resolve(directory, object.name))))
+      throw new Error("Result output-file collides with a downloaded artifact");
+}
 function createClient(config) {
   const endpoint = new URL(config.endpoint);
   if (
@@ -124,7 +149,7 @@ class Transfer {
   constructor({ client, bucket, maxBytes = 2 * 1024 ** 3, readAttempts = 3 }) {
     this.client = client;
     this.bucket = bucket;
-    this.maxBytes = maxBytes;
+    this.maxBytes = positiveLimit(maxBytes);
     this.readAttempts = readAttempts;
   }
   async request(command, { read = false, absent = false } = {}) {
@@ -150,9 +175,13 @@ class Transfer {
       }
     }
   }
-  head(key) {
+  head(key, versionId) {
     return this.request(
-      new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+      new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        VersionId: versionId,
+      }),
       { read: true, absent: true },
     );
   }
@@ -165,12 +194,18 @@ class Transfer {
     )
       throw new Error("Invalid or excessive artifact size");
     const received = await this.request(
-      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        VersionId: object.versionId,
+      }),
       { read: true },
     );
     if (
-      received.ContentLength !== undefined &&
-      received.ContentLength !== object.size
+      (object.versionId !== undefined &&
+        received.VersionId !== object.versionId) ||
+      (received.ContentLength !== undefined &&
+        received.ContentLength !== object.size)
     ) {
       received.Body?.destroy?.();
       throw new Error("S3 artifact size mismatch");
@@ -269,6 +304,7 @@ class Transfer {
         )
       )
         throw new Error("S3 upload producer identity or size mismatch");
+      if (head.VersionId !== undefined) object.versionId = head.VersionId;
       const temp = resolve(root, ".verify-" + randomUUID());
       try {
         await this.read(object.key, temp, object);
@@ -289,15 +325,53 @@ class Transfer {
       throw new Error("Artifact allowlist mismatch");
     await fs.mkdir(directory, { recursive: true });
     const root = await fs.realpath(directory);
-    for (const object of record.objects) {
-      const target = resolve(root, object.name);
-      const temp = resolve(root, ".download-" + randomUUID());
-      try {
-        await this.read(object.key, temp, object);
-        await fs.rename(temp, target);
-      } finally {
-        await fs.rm(temp, { force: true });
+    const staging = await fs.mkdtemp(resolve(root, ".download-"));
+    const incoming = resolve(staging, "incoming");
+    await fs.mkdir(incoming);
+    const replaced = [];
+    let preserveBackup = false;
+    try {
+      // No destination is touched until the entire generation has been verified.
+      for (const object of record.objects)
+        await this.read(object.key, resolve(incoming, object.name), object);
+      const backup = resolve(staging, "previous");
+      await fs.mkdir(backup);
+      for (const object of record.objects) {
+        const target = resolve(root, object.name);
+        const old = resolve(backup, object.name);
+        const entry = { target, old, saved: false, installed: false };
+        replaced.push(entry);
+        const existing = await fs.lstat(target).catch((error) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        });
+        if (existing) {
+          if (!existing.isFile() || existing.isSymbolicLink())
+            throw new Error("Download target must be a regular file");
+          await fs.rename(target, old);
+          entry.saved = true;
+        }
+        await fs.rename(resolve(incoming, object.name), target);
+        entry.installed = true;
       }
+    } catch (error) {
+      for (const entry of replaced.reverse()) {
+        try {
+          if (entry.installed) await fs.rm(entry.target);
+          if (entry.saved) await fs.rename(entry.old, entry.target);
+        } catch {
+          preserveBackup = true;
+        }
+      }
+      if (preserveBackup)
+        throw new Error(
+          "Download rollback incomplete; retained backup at " + staging,
+          { cause: error },
+        );
+      throw error;
+    } finally {
+      if (!preserveBackup)
+        await fs.rm(staging, { recursive: true, force: true });
     }
     return record;
   }
@@ -323,8 +397,12 @@ class Transfer {
     )
       throw new Error("Consumers have not terminated");
     for (const object of record.objects) {
-      const head = await this.head(object.key);
+      const head = await this.head(object.key, object.versionId);
       if (head) {
+        if (head.VersionId !== object.versionId)
+          throw new Error(
+            "S3 versioned deletion requires the recorded object version",
+          );
         const metadataMatches =
           head.Metadata?.sha256 === object.hash &&
           ["repository", "source", "run", "attempt", "job"].every(
@@ -347,18 +425,19 @@ class Transfer {
             await fs.rm(path, { force: true });
           }
         }
-        if (typeof head.ETag !== "string" || !head.ETag)
+        if (typeof head.ETag !== "string" || !head.ETag.trim())
           throw new Error("S3 delete requires a confirmed ETag");
         try {
           await this.request(
             new DeleteObjectCommand({
               Bucket: this.bucket,
               Key: object.key,
+              VersionId: object.versionId,
               IfMatch: head.ETag,
             }),
           );
         } catch {}
-        if (await this.head(object.key))
+        if (await this.head(object.key, object.versionId))
           throw new Error("S3 object deletion is unconfirmed");
       }
     }
@@ -369,6 +448,9 @@ class Transfer {
 async function run({ inputs, core }) {
   for (const key of ["access-key-id", "secret-access-key", "session-token"])
     if (inputs[key]) core.setSecret(inputs[key]);
+  const maxBytes = positiveLimit(
+    Number(inputs["max-file-bytes"] || 2 * 1024 ** 3),
+  );
   const transfer = new Transfer({
     client: createClient({
       endpoint: inputs.endpoint,
@@ -380,7 +462,7 @@ async function run({ inputs, core }) {
       pathStyle: inputs["path-style"] !== "false",
     }),
     bucket: inputs.bucket,
-    maxBytes: Number(inputs["max-file-bytes"] || 2 * 1024 ** 3),
+    maxBytes,
   });
   const identity = JSON.parse(
     await fs.readFile(inputs["identity-file"], "utf8"),
@@ -395,13 +477,15 @@ async function run({ inputs, core }) {
     });
   else {
     const record = JSON.parse(await fs.readFile(inputs["record-file"], "utf8"));
-    if (inputs.operation === "download")
+    if (inputs.operation === "download") {
+      validateRecord(record, identity);
+      await validateOutputPath(record, inputs.directory, inputs["output-file"]);
       result = await transfer.download(record, {
         identity,
         directory: inputs.directory,
         allowedFiles: JSON.parse(inputs.files),
       });
-    else if (inputs.operation === "delete")
+    } else if (inputs.operation === "delete")
       result = await transfer.remove(record, {
         identity,
         consumers: JSON.parse(
@@ -411,6 +495,14 @@ async function run({ inputs, core }) {
     else if (inputs.operation === "register") {
       validateRecord(record, identity);
       for (const object of record.objects) {
+        const head = await transfer.head(object.key, object.versionId);
+        if (
+          !head ||
+          (object.versionId !== undefined &&
+            head.VersionId !== object.versionId)
+        )
+          throw new Error("Registered S3 object version is missing");
+        if (head.VersionId !== undefined) object.versionId = head.VersionId;
         const path = resolve(inputs.directory, ".register-" + randomUUID());
         try {
           await transfer.read(object.key, path, object);
@@ -439,6 +531,8 @@ async function run({ inputs, core }) {
 }
 module.exports = {
   hashFile,
+  positiveLimit,
+  validateOutputPath,
   validateIdentity,
   validateRecord,
   createClient,

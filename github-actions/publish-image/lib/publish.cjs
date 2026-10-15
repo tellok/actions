@@ -20,7 +20,8 @@ async function hashFile(path) {
 function verifyImage(image, expected, strict = true) {
   if (
     !digest.test(image.Id || "") ||
-    `${image.Os}/${image.Architecture}` !== expected.platform ||
+    [image.Os, image.Architecture, image.Variant].filter(Boolean).join("/") !==
+      expected.platform ||
     image.Config?.Labels?.["org.opencontainers.image.revision"] !==
       expected.source ||
     image.Config?.Labels?.["org.opencontainers.image.version"] !==
@@ -90,7 +91,9 @@ async function validateArchive(archive, expected, run = output) {
   if (
     !/^[a-f0-9]{40}$/.test(expected.source || "") ||
     !digest.test(expected.imageId || "") ||
-    !/^[a-z0-9]+\/[a-z0-9_]+$/.test(expected.platform || "") ||
+    !/^[a-z0-9]+\/[a-z0-9_]+(?:\/[a-z0-9_.-]+)?$/.test(
+      expected.platform || "",
+    ) ||
     !expected.version ||
     !expected.reference
   )
@@ -122,6 +125,7 @@ async function validateArchive(archive, expected, run = output) {
     Id: "sha256:" + createHash("sha256").update(raw).digest("hex"),
     Os: config.os,
     Architecture: config.architecture,
+    Variant: config.variant,
     Config: config.config,
     RootFS: { Layers: config.rootfs?.diff_ids },
   };
@@ -166,6 +170,18 @@ function createDockerClient({ run = output } = {}) {
         throw new Error("Registry lookup failed");
       }
       const manifest = JSON.parse(raw);
+      const mediaType = manifest.mediaType || manifest.MediaType;
+      if (
+        manifest.manifests ||
+        manifest.Manifests ||
+        ![
+          "application/vnd.docker.distribution.manifest.v2+json",
+          "application/vnd.oci.image.manifest.v1+json",
+        ].includes(mediaType)
+      )
+        throw new Error(
+          "Registry tag must resolve to a single image manifest, not an index",
+        );
       const found = manifest.digest || manifest.Digest;
       if (!digest.test(found || ""))
         throw new Error("Registry response lacks a verified digest");
@@ -196,7 +212,45 @@ function createDockerClient({ run = output } = {}) {
     },
   };
 }
+function normalizeRegistry(registry) {
+  if (
+    typeof registry !== "string" ||
+    !/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?)(?::[0-9]+)?$/.test(
+      registry,
+    )
+  )
+    throw new Error("Invalid registry hostname");
+  const host = registry.toLowerCase();
+  return ["docker.io", "index.docker.io", "registry-1.docker.io"].includes(host)
+    ? "docker.io"
+    : host;
+}
+function validateRegistry(registry, image) {
+  const login = normalizeRegistry(registry);
+  if (
+    typeof image !== "string" ||
+    !/^[a-z0-9][a-z0-9./:_-]*$/.test(image) ||
+    image.includes("@")
+  )
+    throw new Error("Invalid image repository");
+  const parts = image.split("/");
+  const explicit =
+    parts.length > 1 &&
+    (parts[0].includes(".") ||
+      parts[0].includes(":") ||
+      parts[0] === "localhost");
+  const host = explicit ? normalizeRegistry(parts.shift()) : "docker.io";
+  if (
+    host !== login ||
+    parts.some((part) => !/^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/.test(part))
+  )
+    throw new Error(
+      "Image repository must match the authenticated registry and contain no tag",
+    );
+  return login;
+}
 async function publish(options) {
+  validateRegistry(options.registry, options.image);
   await (options.verify || validateArchive)(options.archive, options.expected);
   return publishVerified(options);
 }
@@ -206,6 +260,8 @@ async function publishVerified({
   image,
   tags,
   existingPolicy = "exact",
+  registry,
+  immutableTags = false,
   docker = createDockerClient(),
 }) {
   if (
@@ -218,6 +274,7 @@ async function publishVerified({
     !["exact", "source"].includes(existingPolicy)
   )
     throw new Error("Invalid publication references or policy");
+  validateRegistry(registry, image);
   const found = await Promise.all(
     tags.map((tag) => docker.lookup(image + ":" + tag, expected.platform)),
   );
@@ -225,6 +282,10 @@ async function publishVerified({
     verifyImage(item.image, expected, existingPolicy === "exact");
   if (new Set(found.filter(Boolean).map((item) => item.digest)).size > 1)
     throw new Error("Immutable tag digests conflict");
+  if (found.some((item) => !item) && immutableTags !== true)
+    throw new Error(
+      "New tags require caller confirmation of registry-side immutable tags",
+    );
   let published = found.find(Boolean);
   if (!published) {
     await docker.load(archive);
@@ -250,6 +311,8 @@ async function publishVerified({
 }
 module.exports = {
   hashFile,
+  validateRegistry,
+  normalizeRegistry,
   verifyImage,
   validateArchive,
   createDockerClient,

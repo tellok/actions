@@ -116,3 +116,38 @@ test("read-only scopes and path escapes cannot overwrite shared cache", async (t
   await fs.symlink(evil, join(dir, "example/project/main/current"));
   assert.throws(() => call("prepare", config(dir)));
 });
+
+test("multiple load platforms fail even when caching is disabled", () => {
+  for (const platforms of [
+    "linux/amd64,linux/arm64",
+    "linux/amd64\nlinux/arm64",
+  ])
+    assert.throws(() => call("prepare", { platforms }), /exactly one platform/);
+  assert.equal(call("prepare", { platforms: "linux/arm/v7" }).enabled, false);
+});
+test("invalid numeric limits create no lease or pending export", async (t) => {
+  const dir = await root(t);
+  const initial = call("prepare", config(dir));
+  await complete(initial);
+  call("release", initial);
+  for (const [key, value] of [
+    ["max-generation-bytes", "bad"],
+    ["max-total-bytes", "-1"],
+    ["keep-generations", "0"],
+    ["keep-generations", "1.5"],
+  ]) {
+    assert.throws(
+      () => call("prepare", { ...config(dir), [key]: value }),
+      /Invalid cache limit/,
+    );
+    const names = await fs.readdir(join(initial.root, "main"));
+    assert.equal(
+      names.some((name) => name.startsWith("pending-")),
+      false,
+    );
+    const leases = await fs
+      .readdir(join(initial.root, "main/.leases"))
+      .catch(() => []);
+    assert.deepEqual(leases, []);
+  }
+});

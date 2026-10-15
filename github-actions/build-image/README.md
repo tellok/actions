@@ -22,3 +22,7 @@ cache-root 为空时为普通无持久缓存构建。运行环境需要 Docker�
 缓存命中是否跳过依赖安装由 Dockerfile 输入层决定；源码 COPY 应位于锁文件/依赖安装之后。[Docker local backend](https://docs.docker.com/build/cache/backends/local/) 不会自动清理历史 blobs，本组件以完整代管理。
 
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
+
+运行前提：Actions Runner >=2.327.1，包含 github-script v8 使用的 Node 24 Action 运行时；本仓库安装和程序化调用需 Node >=22。详见[根说明](../../README.md)。
+
+镜像必须可加载到本地 Docker：`platforms` 为空或仅含一个 `os/arch[/variant]`；多平台列表在构建前拒绝。两个字节容量限制必须为非负整数（0 表示不限制），`keep-generations` 必须为正整数；全部在创建租约/临时导出前校验。

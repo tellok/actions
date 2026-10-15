@@ -34,3 +34,9 @@ maintain 需要可信目标分支事件、干净 checkout、contents:write 和 p
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
 
 使用 GITHUB_TOKEN 写入 PR 还需仓库允许 Actions 创建 PR；默认工作流权限可继续只读，只给 maintain job 显式内容与 PR 写权限。组件不会修改仓库开关。
+
+运行前提：Actions Runner >=2.327.1，包含 github-script v8 使用的 Node 24 Action 运行时；本仓库安装和程序化调用需 Node >=22。详见[根说明](../../README.md)。
+
+版本命令使用显式环境白名单：保留 PATH、HOME、临时目录、区域设置及工具缓存位置，移除序列化 Action 输入、全部 INPUT_* 及任意令牌/秘密环境变量。调用方应使用 `actions/checkout` 的 `persist-credentials: false`，且不要将发布凭据放入项目可读文件；环境清理不是恶意依赖的进程沙箱。路径白名单禁用重命名检测，同时检查工作树和暂存区，禁止从范围外文件重命名到允许路径。Changeset 目录的实际路径必须位于 checkout 内。
+
+版本命令完成后重新读取受管理 PR 正文并更新标记块，保留这次读取时的人工内容；最终确认要求 PR 仍开放、未合并、来源/目标仓库与提交匹配，并核对配置的 managed-author（包括首次创建）。GitHub PR 正文更新没有这里可用的原子比较写接口；读取之后的并发人工编辑仍需调用方协调，不能把此刷新当作正文写入租约。

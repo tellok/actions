@@ -4,7 +4,7 @@
   "private": true,
   "description": "Composable CI actions with caller-provided project and environment configuration",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "test": "node --test github-actions/*/tests/*.test.cjs",

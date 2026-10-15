@@ -54,6 +54,15 @@ def current(root, scope):
 
 
 def prepare(config):
+    platforms = config.get('platforms', '').strip()
+    if platforms and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?', platforms):
+        raise ValueError('Docker load requires exactly one platform')
+    limits = {}
+    for key, default, minimum in [('max-generation-bytes', 0, 0), ('max-total-bytes', 0, 0), ('keep-generations', 2, 1)]:
+        value = str(config.get(key, default))
+        if not re.fullmatch(r'[0-9]+', value) or int(value) < minimum:
+            raise ValueError('Invalid cache limit: ' + key)
+        limits[key] = int(value)
     raw = config.get('cache-root', '')
     if not raw:
         return {'enabled': False, 'imports': '', 'export': '', 'token': ''}
@@ -89,9 +98,9 @@ def prepare(config):
             export = str(pending)
     return {'enabled': True, 'root': str(root), 'token': token, 'readers': readers,
             'imports': '\n'.join(imports), 'export': export, 'scope': write_scope,
-            'max_bytes': int(config.get('max-generation-bytes') or 0),
-            'max_total': int(config.get('max-total-bytes') or 0), 'base': str(base),
-            'keep': max(1, int(config.get('keep-generations') or 2))}
+            'max_bytes': limits['max-generation-bytes'],
+            'max_total': limits['max-total-bytes'], 'base': str(base),
+            'keep': limits['keep-generations']}
 
 
 def size(path):

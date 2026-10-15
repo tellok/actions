@@ -34,6 +34,12 @@ async function detect(cwd, directory = ".changeset") {
   const candidate = resolve(root, directory);
   if (!candidate.startsWith(root + "/") || directory.includes("\n"))
     throw new Error("Changeset directory escapes the workspace");
+  const real = await fs.realpath(candidate).catch((error) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (real && !real.startsWith(root + "/"))
+    throw new Error("Changeset directory escapes the workspace");
   const entries = await fs
     .readdir(candidate, { withFileTypes: true })
     .catch((error) => {
@@ -134,6 +140,45 @@ async function assertFresh(github, context, state) {
     throw new Error("Managed branch lease changed during preparation");
 }
 
+function commandEnvironment(environment = process.env) {
+  // Keep tools usable, but do not pass action inputs or arbitrary caller secrets.
+  const allowed =
+    /^(?:PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TMP|TEMP|LANG|LC_[A-Z_]+|TZ|CI|TERM|SYSTEMROOT|WINDIR|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|PNPM_HOME|COREPACK_HOME|XDG_CACHE_HOME|npm_config_cache|NPM_CONFIG_CACHE|GITHUB_WORKSPACE|RUNNER_TEMP|RUNNER_TOOL_CACHE|AGENT_TOOLSDIRECTORY)$/;
+  return Object.fromEntries(
+    Object.entries(environment).filter(([key]) => allowed.test(key)),
+  );
+}
+async function refreshBody({ github, context, state }) {
+  if (state.number) {
+    const pr = (
+      await github.rest.pulls.get({
+        ...context.repo,
+        pull_number: state.number,
+      })
+    ).data;
+    if (
+      pr.state !== "open" ||
+      pr.merged ||
+      pr.head?.ref !== state.branch ||
+      pr.base?.ref !== state.base ||
+      pr.head?.repo?.full_name !==
+        `${context.repo.owner}/${context.repo.repo}` ||
+      pr.base?.repo?.full_name !==
+        `${context.repo.owner}/${context.repo.repo}` ||
+      !pr.body?.includes(state.marker) ||
+      (state.author && pr.user?.login !== state.author)
+    )
+      throw new Error("Managed PR identity changed before updating its body");
+    state.previous = pr.body;
+  }
+  state.body = managedBody(
+    state.previous,
+    state.content,
+    state.start,
+    state.end,
+  );
+  await fs.writeFile(state.bodyPath, state.body, { mode: 0o600 });
+}
 async function prepare({ inputs, github, context }) {
   const cwd = resolve(
     process.env.GITHUB_WORKSPACE || process.cwd(),
@@ -173,7 +218,7 @@ async function prepare({ inputs, github, context }) {
   execFileSync(
     "/bin/bash",
     ["-euo", "pipefail", "-c", inputs["version-command"]],
-    { cwd, stdio: "inherit" },
+    { cwd, stdio: "inherit", env: commandEnvironment() },
   );
   await assertFresh(github, context, state);
   const patterns = inputs["allowed-paths"]
@@ -183,12 +228,47 @@ async function prepare({ inputs, github, context }) {
   if (!patterns.length) throw new Error("Explicit allowed-paths are required");
   const lines = (value) => value.split("\n").filter(Boolean);
   const all = new Set([
-    ...lines(git(cwd, "diff", "--relative", "--name-only", source)),
+    ...lines(
+      git(cwd, "diff", "--no-renames", "--relative", "--name-only", source),
+    ),
+    ...lines(
+      git(
+        cwd,
+        "diff",
+        "--cached",
+        "--no-renames",
+        "--relative",
+        "--name-only",
+        source,
+      ),
+    ),
     ...lines(git(cwd, "ls-files", "--others", "--exclude-standard")),
   ]);
   const allowed = new Set([
     ...lines(
-      git(cwd, "diff", "--relative", "--name-only", source, "--", ...patterns),
+      git(
+        cwd,
+        "diff",
+        "--cached",
+        "--no-renames",
+        "--relative",
+        "--name-only",
+        source,
+        "--",
+        ...patterns,
+      ),
+    ),
+    ...lines(
+      git(
+        cwd,
+        "diff",
+        "--no-renames",
+        "--relative",
+        "--name-only",
+        source,
+        "--",
+        ...patterns,
+      ),
     ),
     ...lines(
       git(cwd, "ls-files", "--others", "--exclude-standard", "--", ...patterns),
@@ -211,14 +291,9 @@ async function prepare({ inputs, github, context }) {
   state.end = inputs["body-end"];
   if (!state.start || !state.end || state.start === state.end)
     throw new Error("Distinct body markers are required");
-  state.body = managedBody(
-    state.previous,
-    `${state.marker}\nSource: ${state.source}\n${content}`,
-    state.start,
-    state.end,
-  );
+  state.content = `${state.marker}\nSource: ${state.source}\n${content}`;
   state.bodyPath = join(state.temp, "body.md");
-  await fs.writeFile(state.bodyPath, state.body, { mode: 0o600 });
+  await refreshBody({ github, context, state });
   try {
     state.oldHooks = git(cwd, "config", "--local", "--get", "core.hooksPath");
   } catch (error) {
@@ -267,6 +342,11 @@ async function verifyResult({ github, context, state, number, head }) {
     })
   ).data;
   if (
+    pr.number !== Number(number) ||
+    pr.state !== "open" ||
+    pr.merged ||
+    (state.author && pr.user?.login !== state.author) ||
+    pr.base?.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
     pr.head?.sha !== head ||
     pr.head?.ref !== state.branch ||
     pr.base?.ref !== state.base ||
@@ -307,6 +387,8 @@ async function restore(state) {
 
 module.exports = {
   detect,
+  commandEnvironment,
+  refreshBody,
   managedBody,
   preflight,
   assertFresh,

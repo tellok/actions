@@ -17,6 +17,8 @@ function fixture() {
   const refs = { main: source, versions: head };
   const pr = {
     number: 1,
+    state: "open",
+    merged: false,
     body: "managed",
     user: { login: "bot" },
     head: { sha: head, ref: "versions", repo: { full_name: "example/app" } },
@@ -101,8 +103,153 @@ test("managed body preserves external notes and confirmation rejects wrong head"
       context,
       state: { ...(await preflight(args(f))), body: "managed" },
       number: 1,
+      state: "open",
+      merged: false,
       head: "c".repeat(40),
     }),
     /confirmed/,
   );
 });
+
+test("symlinked changeset directory cannot read outside the checkout", async (t) => {
+  const root = await fs.mkdtemp(join(tmpdir(), "changeset-link-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(join(root, "repo"));
+  await fs.mkdir(join(root, "external"));
+  await fs.writeFile(join(root, "external/pending.md"), "---");
+  await fs.symlink(join(root, "external"), join(root, "repo/.changeset"));
+  await assert.rejects(detect(join(root, "repo")), /escapes/);
+});
+test("command environment strips serialized inputs, token inputs and arbitrary secrets", () => {
+  const { commandEnvironment } = require("../lib/version.cjs");
+  assert.deepEqual(
+    commandEnvironment({
+      PATH: "/bin",
+      HOME: "/tmp/example",
+      TOOLKIT_INPUTS: '{"github-token":"secret"}',
+      "INPUT_GITHUB-TOKEN": "secret",
+      INPUT_GITHUB_TOKEN: "secret",
+      GITHUB_TOKEN: "secret",
+      GH_TOKEN: "secret",
+      CUSTOM_SECRET: "secret",
+      AWS_SECRET_ACCESS_KEY: "secret",
+    }),
+    { PATH: "/bin", HOME: "/tmp/example" },
+  );
+});
+async function preparation(t, command) {
+  const { execFileSync } = require("node:child_process");
+  const dir = await fs.mkdtemp(join(tmpdir(), "version-preparation-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const git = (...args) =>
+    execFileSync("git", args, {
+      cwd: dir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-b", "main");
+  git("config", "user.email", "test@example.test");
+  git("config", "user.name", "Test");
+  await fs.mkdir(join(dir, ".changeset"));
+  await fs.writeFile(join(dir, ".changeset/pending.md"), "---");
+  await fs.writeFile(join(dir, "secrets.yml"), "keep this file");
+  git("add", ".");
+  git("commit", "-m", "fixture");
+  const sha = git("rev-parse", "HEAD"),
+    f = fixture();
+  f.refs.main = sha;
+  delete f.refs.versions;
+  f.setPrs([]);
+  return {
+    dir,
+    f,
+    context: {
+      ...context,
+      sha,
+      ref: "refs/heads/main",
+      eventName: "push",
+      payload: { repository: { default_branch: "main", fork: false } },
+    },
+    inputs: {
+      path: dir,
+      branch: "versions",
+      "version-command": command,
+      "allowed-paths": "allowed.md\n.changeset",
+      "ownership-marker": "managed",
+      "body-start": "start",
+      "body-end": "end",
+      "managed-author": "bot",
+    },
+  };
+}
+test("version command cannot rename a forbidden file into the allowlist", async (t) => {
+  const p = await preparation(t, "git mv secrets.yml allowed.md");
+  await assert.rejects(
+    require("../lib/version.cjs").prepare({
+      inputs: p.inputs,
+      context: p.context,
+      github: p.f.github,
+    }),
+    /outside the allowlist/,
+  );
+});
+test("actual version subprocess receives no serialized write token", async (t) => {
+  const p = await preparation(
+    t,
+    'node -e \'if(Object.keys(process.env).some(k=>k==="TOOLKIT_INPUTS"||k.startsWith("INPUT_")))process.exit(9); require("node:fs").writeFileSync("allowed.md","versions")\'',
+  );
+  const old = process.env.TOOLKIT_INPUTS;
+  process.env.TOOLKIT_INPUTS = '{"github-token":"sentinel-token"}';
+  try {
+    const impl = require("../lib/version.cjs");
+    const state = await impl.prepare({
+      inputs: p.inputs,
+      context: p.context,
+      github: p.f.github,
+    });
+    assert.ok(state.paths.includes("allowed.md"));
+    await impl.restore(state);
+  } finally {
+    if (old === undefined) delete process.env.TOOLKIT_INPUTS;
+    else process.env.TOOLKIT_INPUTS = old;
+  }
+});
+test("fresh PR body preserves maintainer edits made during version preparation", async (t) => {
+  const f = fixture(),
+    state = await preflight(args(f));
+  const dir = await fs.mkdtemp(join(tmpdir(), "version-body-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  Object.assign(state, {
+    start: "start",
+    end: "end",
+    content: "managed\nnew",
+    bodyPath: join(dir, "body.md"),
+  });
+  f.pr.body = "maintainer edit\nstart\nmanaged old\nend\nfooter";
+  await require("../lib/version.cjs").refreshBody({
+    github: f.github,
+    context,
+    state,
+  });
+  assert.equal(
+    await fs.readFile(state.bodyPath, "utf8"),
+    "maintainer edit\nstart\nmanaged\nnew\nend\nfooter",
+  );
+});
+for (const [label, change] of [
+  ["closed", { state: "closed" }],
+  ["merged", { merged: true }],
+  ["wrong author", { user: { login: "other-bot" } }],
+]) {
+  test(`version confirmation rejects ${label} PR including a first managed PR`, async () => {
+    const f = fixture(),
+      state = await preflight(args(f));
+    state.number = undefined;
+    state.body = f.pr.body;
+    Object.assign(f.pr, change);
+    await assert.rejects(
+      verifyResult({ github: f.github, context, state, number: 1, head }),
+      /could not be confirmed/,
+    );
+  });
+}
