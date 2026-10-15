@@ -528,3 +528,87 @@ test("draft confirmation rejects changed managed notes", async (t) => {
     /Managed release notes changed/,
   );
 });
+
+test("prerelease publication and recovery preserve identity and stable Latest", async (t) => {
+  const f = await fixture(t);
+  const options = {
+    ...f.options,
+    tag: "v2.0.0-beta.0",
+    name: "2.0.0-beta.0",
+    prerelease: true,
+  };
+  await ensureRelease(options);
+  assert.equal(f.state.release.prerelease, true);
+  assert.equal(f.state.release.draft, false);
+  assert.equal(f.state.latest, 99);
+  const result = await ensureRelease({ ...options, operation: "recover" });
+  assert.equal(result.published, true);
+  assert.equal(f.calls.filter((call) => call === "draft").length, 1);
+  assert.equal(f.state.release.prerelease, true);
+  assert.equal(f.state.latest, 99);
+});
+
+test("prerelease Latest promotion fails before any remote access", async (t) => {
+  const f = await fixture(t);
+  f.api.getTag = async () => {
+    throw new Error("Unexpected remote access");
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, prerelease: true, latest: true }),
+    /cannot be promoted to Latest/,
+  );
+  assert.deepEqual(f.calls, []);
+});
+
+test("non-boolean prerelease values fail before any remote access", async (t) => {
+  const f = await fixture(t);
+  f.api.getTag = async () => {
+    throw new Error("Unexpected remote access");
+  };
+  for (const prerelease of ["true", 1, null]) {
+    await assert.rejects(
+      ensureRelease({ ...f.options, prerelease }),
+      /prerelease must be a boolean/,
+    );
+  }
+  assert.deepEqual(f.calls, []);
+});
+
+test("action rejects invalid prerelease flags and Latest promotion before file reads", async () => {
+  const { run } = require(
+    process.env.TOOLKIT_TEST_DIST === "true"
+      ? "../dist/index.js"
+      : "../lib/runtime.cjs",
+  );
+  for (const prerelease of ["TRUE", "yes", ""]) {
+    await assert.rejects(
+      run({ inputs: { operation: "publish", prerelease } }),
+      /prerelease input must be exactly/,
+    );
+  }
+  await assert.rejects(
+    run({
+      inputs: { operation: "publish", prerelease: "true", latest: "true" },
+    }),
+    /cannot be promoted to Latest/,
+  );
+});
+
+test("prerelease identity changes are rejected before publication", async (t) => {
+  const f = await fixture(t);
+  const options = { ...f.options, prerelease: true };
+  await ensureRelease({ ...options, operation: "draft" });
+  f.state.release.prerelease = false;
+  await assert.rejects(ensureRelease(options), /identity mismatch/);
+  assert.equal(f.calls.includes("publish"), false);
+});
+
+test("a stable release cannot be silently reclassified as a prerelease", async (t) => {
+  const f = await fixture(t);
+  await ensureRelease(f.options);
+  await assert.rejects(
+    ensureRelease({ ...f.options, operation: "recover", prerelease: true }),
+    /identity mismatch/,
+  );
+  assert.equal(f.state.release.prerelease, false);
+});

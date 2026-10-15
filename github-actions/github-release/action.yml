@@ -28,6 +28,9 @@ inputs:
   latest:
     description: Exact true or false; caller-verified Latest promotion, ignored for recovery
     default: "false"
+  prerelease:
+    description: Exact true or false; expected prerelease identity, incompatible with latest true
+    default: "false"
   github-token:
     description: Token scoped to the caller's release repository
     default: ${{ github.token }}
