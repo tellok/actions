@@ -180,6 +180,26 @@ function commandEnvironment(environment = process.env) {
   );
 }
 async function refreshBody({ github, context, state }) {
+  if (!state.number) {
+    const candidates = await github.paginate(github.rest.pulls.list, {
+      ...context.repo,
+      state: "open",
+      head: `${context.repo.owner}:${state.branch}`,
+      per_page: 100,
+    });
+    if (candidates.length > 1)
+      throw new Error(
+        "Duplicate version PR candidates appeared during preparation",
+      );
+    if (candidates.length) {
+      if (
+        !Number.isSafeInteger(candidates[0].number) ||
+        candidates[0].number < 1
+      )
+        throw new Error("Invalid version PR candidate identity");
+      state.number = candidates[0].number;
+    }
+  }
   if (state.number) {
     const pr = (
       await github.rest.pulls.get({
@@ -191,6 +211,7 @@ async function refreshBody({ github, context, state }) {
       pr.state !== "open" ||
       pr.merged ||
       pr.head?.ref !== state.branch ||
+      pr.head?.sha !== state.expected ||
       pr.base?.ref !== state.base ||
       pr.head?.repo?.full_name !==
         `${context.repo.owner}/${context.repo.repo}` ||

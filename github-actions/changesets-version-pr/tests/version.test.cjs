@@ -454,3 +454,79 @@ test("body-file generated inside the checkout remains usable", async (t) => {
   assert.match(state.body, /release notes/);
   await impl.restore(state);
 });
+
+async function lateCandidate(t) {
+  const f = fixture();
+  let opened = false;
+  const closed = { ...f.pr, state: "closed" };
+  f.github.paginate = async (method, args) =>
+    args.state === "open" ? (opened ? [f.pr] : []) : [closed];
+  const state = await preflight(args(f));
+  assert.equal(state.number, undefined);
+  f.pr.number = 2;
+  f.pr.body = "new human note\nstart\nmanaged old notes\nend\nfooter";
+  opened = true;
+  const dir = await fs.mkdtemp(join(tmpdir(), "late-version-pr-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  Object.assign(state, {
+    start: "start",
+    end: "end",
+    content: "managed\nnew versions",
+    bodyPath: join(dir, "body.md"),
+  });
+  return { f, state };
+}
+test("PR opened on an unchanged previously managed branch is rediscovered with current outside notes", async (t) => {
+  const { f, state } = await lateCandidate(t);
+  await require("../lib/version.cjs").refreshBody({
+    github: f.github,
+    context,
+    state,
+  });
+  assert.equal(state.number, 2);
+  assert.equal(
+    await fs.readFile(state.bodyPath, "utf8"),
+    "new human note\nstart\nmanaged\nnew versions\nend\nfooter",
+  );
+});
+for (const [label, mutate] of [
+  [
+    "wrong author",
+    (pr) => {
+      pr.user.login = "other";
+    },
+  ],
+  [
+    "changed head",
+    (pr) => {
+      pr.head.sha = "c".repeat(40);
+    },
+  ],
+]) {
+  test(`rediscovered PR with ${label} is rejected before writing its body`, async (t) => {
+    const { f, state } = await lateCandidate(t);
+    mutate(f.pr);
+    await assert.rejects(
+      require("../lib/version.cjs").refreshBody({
+        github: f.github,
+        context,
+        state,
+      }),
+      /Managed PR identity changed/,
+    );
+    await assert.rejects(fs.access(state.bodyPath), { code: "ENOENT" });
+  });
+}
+test("multiple PR candidates appearing after preflight are rejected", async (t) => {
+  const { f, state } = await lateCandidate(t);
+  f.github.paginate = async () => [f.pr, { ...f.pr, number: 3 }];
+  await assert.rejects(
+    require("../lib/version.cjs").refreshBody({
+      github: f.github,
+      context,
+      state,
+    }),
+    /Duplicate version PR candidates/,
+  );
+  await assert.rejects(fs.access(state.bodyPath), { code: "ENOENT" });
+});
