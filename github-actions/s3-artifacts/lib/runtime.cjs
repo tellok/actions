@@ -158,6 +158,16 @@ async function reserveOutput(outputFile) {
   }
 }
 
+function matchesProducer(head, object, identity) {
+  return (
+    head?.ContentLength === object.size &&
+    head.Metadata?.sha256 === object.hash &&
+    ["repository", "source", "run", "attempt", "job"].every(
+      (key) => head.Metadata?.[key] === String(identity[key]),
+    )
+  );
+}
+
 function createClient(config) {
   const endpoint = new URL(config.endpoint);
   if (
@@ -357,14 +367,7 @@ class Transfer {
         }
       }
       const head = await this.head(object.key);
-      if (
-        !head ||
-        head.ContentLength !== size ||
-        head.Metadata?.sha256 !== object.hash ||
-        ["repository", "source", "run", "attempt", "job"].some(
-          (key) => head.Metadata?.[key] !== String(identity[key]),
-        )
-      )
+      if (!matchesProducer(head, object, identity))
         throw new Error("S3 upload producer identity or size mismatch");
       if (head.VersionId !== undefined) object.versionId = head.VersionId;
       const temp = resolve(root, ".verify-" + randomUUID());
@@ -575,6 +578,10 @@ async function run({ inputs, core }) {
               head.VersionId !== object.versionId)
           )
             throw new Error("Registered S3 object version is missing");
+          if (!matchesProducer(head, object, identity))
+            throw new Error(
+              "Registered S3 object producer identity or size mismatch",
+            );
           if (head.VersionId !== undefined) object.versionId = head.VersionId;
           const path = resolve(inputs.directory, ".register-" + randomUUID());
           try {

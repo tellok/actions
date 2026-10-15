@@ -31,3 +31,5 @@ delete 需要 record-file 与 consumers-file（`[{"id":20,"status":"completed"}]
 运行前提：Actions Runner >=2.327.1，包含 github-script v8 使用的 Node 24 Action 运行时；本仓库安装和程序化调用需 Node >=22。详见[根说明](../../README.md)。
 
 上传设置 output-file 时，先在结果目录预留并同步独占暂存文件，提前拒绝目录、无效父路径及不可写位置；失败清理暂存并保留旧记录，成功同步完整结果后同目录 rename 替换。远端传输成功即输出生产登记日志，随后即使结果落盘遭遇新的故障，也可从该日志恢复登记；预留文件不能消除后续磁盘耗尽或进程崩溃风险。
+
+register 与 upload 使用相同的生产者校验：HEAD 的 ContentLength、sha256 及 repository/source/run/attempt/job 元数据必须全部匹配登记身份，缺失或冲突时不读取正文、不发出登记。只有匹配后才绑定 HEAD 确认的对象版本，并按该版本回读校验字节。

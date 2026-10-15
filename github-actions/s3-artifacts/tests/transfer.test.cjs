@@ -772,3 +772,104 @@ test("successful upload atomically installs a complete reserved result and logs 
     false,
   );
 });
+
+async function registrationInputs(t) {
+  const { f, inputs } = await uploadInputs(t),
+    record = await f.upload();
+  const recordFile = join(f.dir, "producer-record.json");
+  await fs.writeFile(recordFile, JSON.stringify(record));
+  return {
+    f,
+    record,
+    inputs: {
+      ...inputs,
+      operation: "register",
+      "record-file": recordFile,
+      "output-file": "",
+    },
+  };
+}
+for (const field of [
+  "missing",
+  "repository",
+  "source",
+  "run",
+  "attempt",
+  "job",
+  "sha256",
+  "size",
+]) {
+  test(`registration rejects ${field} producer metadata or size before reading or emitting a record`, async (t) => {
+    const { f, inputs } = await registrationInputs(t);
+    const impl = require(
+      process.env.TOOLKIT_TEST_DIST === "true"
+        ? "../dist/index.js"
+        : "../lib/runtime.cjs",
+    );
+    const original = impl.Transfer.prototype.request;
+    f.calls.length = 0;
+    impl.Transfer.prototype.request = async (command) => {
+      const result = await f.transfer.client.send(command);
+      if (command.constructor.name === "HeadObjectCommand") {
+        result.VersionId = "other-producer-version";
+        if (field === "missing") result.Metadata = {};
+        else if (field === "size") result.ContentLength++;
+        else result.Metadata = { ...result.Metadata, [field]: "other" };
+      }
+      return result;
+    };
+    t.after(() => {
+      impl.Transfer.prototype.request = original;
+    });
+    await assert.rejects(
+      impl.run({
+        inputs,
+        core: {
+          setSecret() {},
+          setOutput() {
+            throw new Error("Must not emit a record");
+          },
+          info() {
+            throw new Error("Must not register");
+          },
+        },
+      }),
+      /producer identity or size mismatch/,
+    );
+    assert.deepEqual(f.calls, ["HeadObjectCommand"]);
+  });
+}
+test("registration accepts exact producer metadata and binds subsequent reads to the confirmed version", async (t) => {
+  const { f, inputs } = await registrationInputs(t);
+  const impl = require(
+    process.env.TOOLKIT_TEST_DIST === "true"
+      ? "../dist/index.js"
+      : "../lib/runtime.cjs",
+  );
+  const original = impl.Transfer.prototype.request,
+    commands = [];
+  impl.Transfer.prototype.request = async (command) => {
+    commands.push(command);
+    const result = await f.transfer.client.send(command);
+    if (
+      ["HeadObjectCommand", "GetObjectCommand"].includes(
+        command.constructor.name,
+      )
+    )
+      result.VersionId = "producer-version";
+    return result;
+  };
+  t.after(() => {
+    impl.Transfer.prototype.request = original;
+  });
+  const result = await impl.run({
+    inputs,
+    core: { setSecret() {}, setOutput() {}, info() {} },
+  });
+  assert.equal(result.objects[0].versionId, "producer-version");
+  assert.equal(
+    commands.find((c) => c.constructor.name === "GetObjectCommand").input
+      .VersionId,
+    "producer-version",
+  );
+});
