@@ -127,7 +127,7 @@ def gc_scope(root, scope, keep):
         try:
             value = json.loads(lease.read_text())
             protected.add(segment(value['generation']))
-        except (ValueError, KeyError, OSError):
+        except (ValueError, KeyError, OSError, TypeError):
             return  # Unknown liveness is never permission to delete a generation.
     try:
         generations = sorted(directory.glob('complete-*'), key=publication_order, reverse=True)

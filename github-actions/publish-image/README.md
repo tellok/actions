@@ -25,3 +25,5 @@ identity-file 的明确字段：source（完整 SHA）、version、platform（�
 `registry` 必须是主机名（可带端口），`image` 的 registry 必须与它一致；Docker Hub 的 docker.io/index.docker.io/registry-1.docker.io 归一化比较。此校验发生在登录前。已存在标签必须指向单镜像 manifest；索引/manifest list 在拉取前拒绝，避免将未验证平台随索引发布。平台 variant 同时纳入归档和 registry 身份核对。
 
 tags 必须是非空 JSON 字符串数组，不将 null、布尔值或数字隐式转换为标签；明确写为字符串的数字标签仍可使用。标签写入遵循普通 Docker 客户端语义，不需要额外确认参数：新标签正常创建，可变标签允许更新；registry 启用不可变标签规则时，由服务端拒绝覆盖，组件不会移除该规则或强制绕过。组件不承诺跨任务标签不可变或多个标签的事务更新；并发写入者仍可能在检查之后更新标签。发布只核对本次读取时的 digest 和镜像身份。[Docker 标签规则说明](https://docs.docker.com/docker-hub/repos/manage/hub-images/immutable-tags/)。
+
+归档层校验在独占临时目录中一次提取明确允许的层文件，拒绝链接或非普通文件，再分别哈希普通层及解压后的 gzip 层；不为每层重复解压整个外层归档。临时目录优先 RUNNER_TEMP，须留足所选层的展开空间，成功或失败均清理。tar 使用默认路径保护及不覆盖既有成员的选项，重复成员/不安全路径不能被静默覆盖接受。

@@ -77,3 +77,20 @@
 现有测试只调整了布局定位及版本准备的 workspace 夹具，使它们继续核对原有逃逸拒绝、版本准备和缓存保证；没有放宽这些断言。缓存布局升级会冷启动，不对实际部署目录做迁移或历史删除。没有增加脚本服务、执行器权限或远程设置变更。
 
 本轮新增 16 项回归；Node 22.11.0 源码入口 109/109，Node 24.18.0 的 S3/Release dist 与其余源码入口 109/109。SDK 重新打包、五组件配置校验及 git diff --check 通过；复用了并重新执行前两轮用例。故障注入只作用于本地测试，未实施远程缓存迁移、发布或清理。
+
+
+## 循环处理异步线程
+
+本轮开始时核对 PR head 与工作树均为 `a7986e161f36c5db3386aab94201554c42014a5b`。GitHub 全量返回 44 个线程、无遗漏分页，未解决 2 个。额外核实 3 个虽已关闭但源码仍存在缺口的旧线程，不能把 isResolved 当作修复证据。
+
+| 线程问题 | 修复及回归 |
+| --- | --- |
+| Reject overlapping version-body markers | 管理块入口检查开闭标记互不包含；两个方向在 prepare/纯正文构造都拒绝 |
+| Keep body-file inside the checkout | 读文件前真实路径包含校验；绝对/上级/外部符号链接均拒绝，内置生成正文仍可用 |
+| Treat non-object lease JSON as unknown liveness | 捕获错误 JSON 形状的 TypeError，保守保留；null/数组/数字 generation/布尔值不破坏 commit/release，移除未知租约后恢复回收 |
+| Avoid re-decompressing the archive for every layer | 选中层只执行一次受限提取；8 个普通/gzip 混合层外层 tar 调用不随层数线性增加；坏字节及外链拒绝 |
+| Reconfirm release name and prerelease status | 固定身份校验集中复用，公开前后含 name/prerelease；上传时变动阻止公开，公开瞬间变动阻止 Latest 与成功回报 |
+
+线程关闭必须在修复提交已推送且回归通过之后执行。异步收敛以 PR 当前完整 head、该提交的代码/安全评审完成摘要和全量线程复查为准，不因短时间没有新线程就宣称结束。此范围仅处理 PR 审查，不关闭或合并 PR，不发布产品。
+
+本轮新增 17 项回归，Node 22.11.0 源码入口及 Node 24.18.0 打包入口均 126/126；SDK 打包、组件配置与差异校验通过。归档性能/链接测试使用本地 bsdtar 和真实文件，不宣称已执行远程镜像发布。

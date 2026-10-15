@@ -390,3 +390,67 @@ for (const mode of ["absolute", "parent", "symlink"]) {
     });
   });
 }
+
+for (const [start, end] of [
+  ["<!--notes", "<!--notes:end-->"],
+  ["<!--notes:start-->", "<!--notes"],
+]) {
+  test(`overlapping version body markers ${start} / ${end} cannot create a managed body`, async (t) => {
+    const p = await preparation(t, "printf 'versions' > allowed.md");
+    Object.assign(p.inputs, { "body-start": start, "body-end": end });
+    await assert.rejects(
+      require("../lib/version.cjs").prepare({
+        inputs: p.inputs,
+        context: p.context,
+        github: p.f.github,
+      }),
+      /must not overlap/,
+    );
+    assert.throws(
+      () => managedBody("", "notes", start, end),
+      /must not overlap/,
+    );
+  });
+}
+for (const mode of ["absolute", "parent", "symlink"]) {
+  test(`body-file cannot copy external content through ${mode} path`, async (t) => {
+    const parent = await fs.mkdtemp(join(tmpdir(), "outside-version-notes-"));
+    t.after(() => fs.rm(parent, { recursive: true, force: true }));
+    const outside = join(parent, "notes.md");
+    await fs.writeFile(outside, "private runner content");
+    const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+    const p = await preparation(
+      t,
+      mode === "symlink"
+        ? `ln -s ${quote(outside)} allowed.md`
+        : "printf 'versions' > allowed.md",
+    );
+    p.inputs["body-file"] =
+      mode === "absolute"
+        ? outside
+        : mode === "parent"
+          ? require("node:path").relative(p.dir, outside)
+          : "allowed.md";
+    await assert.rejects(
+      require("../lib/version.cjs").prepare({
+        inputs: p.inputs,
+        context: p.context,
+        github: p.f.github,
+      }),
+      /body-file escapes the checkout/,
+    );
+    assert.equal(await fs.readFile(outside, "utf8"), "private runner content");
+  });
+}
+test("body-file generated inside the checkout remains usable", async (t) => {
+  const p = await preparation(t, "printf 'release notes' > allowed.md");
+  p.inputs["body-file"] = "allowed.md";
+  const impl = require("../lib/version.cjs");
+  const state = await impl.prepare({
+    inputs: p.inputs,
+    context: p.context,
+    github: p.f.github,
+  });
+  assert.match(state.body, /release notes/);
+  await impl.restore(state);
+});

@@ -12,6 +12,15 @@ const git = (cwd, ...args) =>
   }).trim();
 
 function managedBody(previous, content, start, end) {
+  if (
+    typeof start !== "string" ||
+    typeof end !== "string" ||
+    !start ||
+    !end ||
+    start.includes(end) ||
+    end.includes(start)
+  )
+    throw new Error("Body markers must be nonempty and must not overlap");
   if (content.includes(start) || content.includes(end))
     throw new Error("Version PR content must not contain managed body markers");
   const starts = previous.split(start).length - 1;
@@ -35,13 +44,20 @@ function assertSupportedPlatform(platform = process.platform) {
   if (!["linux", "darwin"].includes(platform))
     throw new Error("Changesets version PR supports only Linux and macOS");
 }
-async function resolveRepositoryPath(workspace, repositoryPath = ".") {
-  const root = await fs.realpath(workspace);
-  const candidate = await fs.realpath(resolve(root, repositoryPath));
+async function resolveWithin(directory, candidatePath, message) {
+  const root = await fs.realpath(directory);
+  const candidate = await fs.realpath(resolve(root, candidatePath));
   const local = relative(root, candidate);
   if (local === ".." || local.startsWith(".." + sep) || isAbsolute(local))
-    throw new Error("Repository path escapes GITHUB_WORKSPACE");
+    throw new Error(message);
   return candidate;
+}
+async function resolveRepositoryPath(workspace, repositoryPath = ".") {
+  return resolveWithin(
+    workspace,
+    repositoryPath,
+    "Repository path escapes GITHUB_WORKSPACE",
+  );
 }
 async function detect(cwd, directory = ".changeset") {
   assertSupportedPlatform();
@@ -298,12 +314,17 @@ async function prepare({ inputs, github, context }) {
   state.paths = [...all].sort();
   state.cwd = cwd;
   const content = inputs["body-file"]
-    ? await fs.readFile(resolve(cwd, inputs["body-file"]), "utf8")
+    ? await fs.readFile(
+        await resolveWithin(
+          cwd,
+          inputs["body-file"],
+          "body-file escapes the checkout",
+        ),
+        "utf8",
+      )
     : inputs.body || "";
   state.start = inputs["body-start"];
   state.end = inputs["body-end"];
-  if (!state.start || !state.end || state.start === state.end)
-    throw new Error("Distinct body markers are required");
   state.content = `${state.marker}\nSource: ${state.source}\n${content}`;
   managedBody("", state.content, state.start, state.end);
   state.temp = await fs.mkdtemp(

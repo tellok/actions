@@ -328,3 +328,123 @@ test("numeric-looking destination tags remain valid when explicitly supplied as 
       f.found.digest,
     );
 });
+
+async function layeredArchive(
+  t,
+  { count = 4, corrupt = false, symlink = false } = {},
+) {
+  const fs = require("node:fs/promises"),
+    path = require("node:path"),
+    crypto = require("node:crypto"),
+    zlib = require("node:zlib"),
+    { execFileSync } = require("node:child_process");
+  const dir = await fs.mkdtemp(
+    path.join(require("node:os").tmpdir(), "layer-validation-"),
+  );
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const entries = [],
+    diffIds = [];
+  for (let i = 0; i < count; i++) {
+    const bytes = Buffer.from(`verified layer ${i}`),
+      stored = i % 2 ? zlib.gzipSync(bytes) : bytes;
+    const entry =
+      crypto.createHash("sha256").update(stored).digest("hex") + ".tar";
+    entries.push(entry);
+    diffIds.push(
+      "sha256:" + crypto.createHash("sha256").update(bytes).digest("hex"),
+    );
+    await fs.writeFile(path.join(dir, entry), stored);
+  }
+  const outside = path.join(dir, "outside.bin");
+  await fs.writeFile(outside, "must remain unchanged");
+  if (corrupt) await fs.writeFile(path.join(dir, entries.at(-1)), "bad layer");
+  if (symlink) {
+    await fs.rm(path.join(dir, entries[0]));
+    await fs.symlink(outside, path.join(dir, entries[0]));
+  }
+  const config = JSON.stringify({
+    os: "linux",
+    architecture: "amd64",
+    config: fixture().found.image.Config,
+    rootfs: { type: "layers", diff_ids: diffIds },
+  });
+  const configId = crypto.createHash("sha256").update(config).digest("hex");
+  await fs.writeFile(path.join(dir, configId + ".json"), config);
+  await fs.writeFile(
+    path.join(dir, "manifest.json"),
+    JSON.stringify([
+      {
+        Config: configId + ".json",
+        RepoTags: [expected.reference],
+        Layers: entries,
+      },
+    ]),
+  );
+  const archive = path.join(dir, "image.tar.gz");
+  execFileSync("tar", [
+    "-czf",
+    archive,
+    "-C",
+    dir,
+    "manifest.json",
+    configId + ".json",
+    ...entries,
+  ]);
+  return {
+    dir,
+    archive,
+    outside,
+    identity: { ...expected, imageId: "sha256:" + configId, layers: diffIds },
+  };
+}
+test("many mixed compressed and plain layers require a constant number of archive traversals", async (t) => {
+  const fs = require("node:fs/promises"),
+    path = require("node:path"),
+    { execFileSync } = require("node:child_process");
+  const f = await layeredArchive(t, { count: 8 });
+  const bin = path.join(f.dir, "bin"),
+    log = path.join(f.dir, "tar.log");
+  await fs.mkdir(bin);
+  const realTar = execFileSync("/bin/sh", ["-c", "command -v tar"], {
+    encoding: "utf8",
+  }).trim();
+  await fs.writeFile(
+    path.join(bin, "tar"),
+    '#!/bin/sh\nprintf "tar\\n" >> "$TOOLKIT_TAR_LOG"\nexec "$TOOLKIT_REAL_TAR" "$@"\n',
+    { mode: 0o700 },
+  );
+  execFileSync(
+    process.execPath,
+    [
+      "-e",
+      `require(${JSON.stringify(require.resolve("../lib/publish.cjs"))}).validateArchive(${JSON.stringify(f.archive)},${JSON.stringify(f.identity)}).catch(error=>{console.error(error.message);process.exit(1)})`,
+    ],
+    {
+      env: {
+        ...process.env,
+        PATH: bin + path.delimiter + process.env.PATH,
+        TOOLKIT_TAR_LOG: log,
+        TOOLKIT_REAL_TAR: realTar,
+      },
+    },
+  );
+  assert.ok((await fs.readFile(log, "utf8")).trim().split("\n").length <= 3);
+});
+test("single-extraction layer validation rejects corrupted bytes", async (t) => {
+  const f = await layeredArchive(t, { corrupt: true });
+  await assert.rejects(
+    require("../lib/publish.cjs").validateArchive(f.archive, f.identity),
+    /layer checksum conflict/,
+  );
+});
+test("single-extraction layer validation rejects symlinks without reading or changing outside files", async (t) => {
+  const f = await layeredArchive(t, { symlink: true });
+  await assert.rejects(
+    require("../lib/publish.cjs").validateArchive(f.archive, f.identity),
+    /regular isolated files/,
+  );
+  assert.equal(
+    await require("node:fs/promises").readFile(f.outside, "utf8"),
+    "must remain unchanged",
+  );
+});

@@ -368,16 +368,19 @@ async function ensureRelease({
     if (!release?.id) throw new Error("Release creation is unconfirmed");
   }
   const id = release.id;
+  const assertIdentity = (value, message = "Release ID identity mismatch") => {
+    if (
+      !value ||
+      value.id !== id ||
+      value.tag_name !== tag ||
+      value.name !== name ||
+      value.prerelease ||
+      value.target_commitish !== source
+    )
+      throw new Error(message);
+  };
   release = await api.getReleaseById(id);
-  if (
-    !release ||
-    release.id !== id ||
-    release.tag_name !== tag ||
-    release.name !== name ||
-    release.prerelease ||
-    release.target_commitish !== source
-  )
-    throw new Error("Release ID identity mismatch");
+  assertIdentity(release);
   if (operation === "draft" && !release.draft)
     throw new Error("Draft operation cannot modify a published release");
   body = managedBody(release.body || "", notes, start, end);
@@ -389,15 +392,11 @@ async function ensureRelease({
   }
   if (operation === "draft") {
     release = await api.getReleaseById(id);
-    if (
-      !release ||
-      release.id !== id ||
-      release.tag_name !== tag ||
-      release.name !== name ||
-      release.target_commitish !== source ||
-      release.prerelease ||
-      !release.draft
-    )
+    assertIdentity(
+      release,
+      "Draft release identity changed before confirmation",
+    );
+    if (!release.draft)
       throw new Error("Draft release identity changed before confirmation");
     if ((await api.getTag(tag)) !== source)
       throw new Error("Release tag changed during draft preparation");
@@ -438,14 +437,16 @@ async function ensureRelease({
     }
   };
   await confirmAssets();
+  release = await api.getReleaseById(id);
+  assertIdentity(release, "Release identity changed before publication");
   await confirmTag();
   if (release.draft) {
     try {
       await api.publishRelease(id);
     } catch {}
     release = await api.getReleaseById(id);
-    if (release.draft || release.id !== id)
-      throw new Error("Release publication is unconfirmed");
+    assertIdentity(release, "Release publication is unconfirmed");
+    if (release.draft) throw new Error("Release publication is unconfirmed");
   }
   if (latest && operation !== "recover") {
     try {
@@ -455,14 +456,8 @@ async function ensureRelease({
       throw new Error("Latest promotion is unconfirmed");
   }
   release = await api.getReleaseById(id);
-  if (
-    !release ||
-    release.id !== id ||
-    release.draft ||
-    release.tag_name !== tag ||
-    release.target_commitish !== source
-  )
-    throw new Error("Published release identity changed");
+  assertIdentity(release, "Published release identity changed");
+  if (release.draft) throw new Error("Published release identity changed");
   await confirmAssets();
   await confirmTag();
   return { id, url: release.html_url, published: true };

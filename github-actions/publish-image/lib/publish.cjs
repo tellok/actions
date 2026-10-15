@@ -1,9 +1,10 @@
 "use strict";
-const { execFileSync, spawn } = require("node:child_process");
+const { execFileSync } = require("node:child_process");
+const { resolve, join } = require("node:path");
 const fs = require("node:fs/promises");
 const { createReadStream } = require("node:fs");
 const { createHash } = require("node:crypto");
-const { Readable, Writable } = require("node:stream");
+const { Writable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { createGunzip } = require("node:zlib");
 const digest = /^sha256:[a-f0-9]{64}$/;
@@ -38,54 +39,26 @@ function verifyImage(image, expected, strict = true) {
   )
     throw new Error("Image layers conflict");
 }
-async function layerHash(archive, entry) {
-  const child = spawn("tar", ["-xOzf", archive, entry], {
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  const done = new Promise((ok, no) => {
-    child.once("error", no);
-    child.once("close", (code) =>
-      code === 0 ? ok() : no(new Error("Archive layer read failed")),
-    );
-  });
-  const hash = createHash("sha256");
-  const reading = (async () => {
-    const iterator = child.stdout[Symbol.asyncIterator]();
-    let first = Buffer.alloc(0);
-    while (first.length < 2) {
-      const next = await iterator.next();
-      if (next.done) break;
-      first = Buffer.concat([first, next.value]);
-    }
-    const source = Readable.from(
-      (async function* () {
-        yield first;
-        for (;;) {
-          const next = await iterator.next();
-          if (next.done) break;
-          yield next.value;
-        }
-      })(),
-    );
-    await pipeline(
-      source,
-      ...(first[0] === 31 && first[1] === 139 ? [createGunzip()] : []),
-      new Writable({
-        write(chunk, encoding, cb) {
-          hash.update(chunk);
-          cb();
-        },
-      }),
-    );
-  })();
+async function layerHash(file) {
+  const handle = await fs.open(file, "r");
+  const magic = Buffer.alloc(2);
   try {
-    await Promise.all([reading, done]);
-    return "sha256:" + hash.digest("hex");
-  } catch (error) {
-    child.kill();
-    await done.catch(() => {});
-    throw error;
+    await handle.read(magic, 0, 2, 0);
+  } finally {
+    await handle.close();
   }
+  const hash = createHash("sha256");
+  await pipeline(
+    createReadStream(file),
+    ...(magic[0] === 31 && magic[1] === 139 ? [createGunzip()] : []),
+    new Writable({
+      write(chunk, encoding, callback) {
+        hash.update(chunk);
+        callback();
+      },
+    }),
+  );
+  return "sha256:" + hash.digest("hex");
 }
 async function validateArchive(archive, expected, run = output) {
   if (
@@ -143,9 +116,45 @@ async function validateArchive(archive, expected, run = output) {
     )
   )
     throw new Error("Invalid archive layers");
-  for (const [i, entry] of layers.entries())
-    if ((await layerHash(archive, entry)) !== image.RootFS.Layers[i])
-      throw new Error("Archive layer checksum conflict");
+  if (!layers.length) return;
+  const directory = await fs.mkdtemp(
+    join(
+      process.env.RUNNER_TEMP || require("node:os").tmpdir(),
+      "ci-image-layers-",
+    ),
+  );
+  try {
+    // Exact validated member names, an empty destination and tar's default
+    // traversal protection keep links from escaping the staging directory.
+    run("tar", [
+      "-xzf",
+      resolve(archive),
+      "-C",
+      directory,
+      "--no-same-owner",
+      "--no-same-permissions",
+      "--no-recursion",
+      "--keep-old-files",
+      "--",
+      ...new Set(layers),
+    ]);
+    const root = await fs.realpath(directory);
+    for (const [i, entry] of layers.entries()) {
+      const file = resolve(root, entry),
+        stat = await fs.lstat(file);
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        stat.nlink !== 1 ||
+        (await fs.realpath(file)) !== file
+      )
+        throw new Error("Archive layers must be regular isolated files");
+      if ((await layerHash(file)) !== image.RootFS.Layers[i])
+        throw new Error("Archive layer checksum conflict");
+    }
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 }
 function createDockerClient({ run = output } = {}) {
   return {

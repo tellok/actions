@@ -329,3 +329,27 @@ test("new cache layout does not import or delete legacy overlapping directories"
   );
   await fs.access(join(oldGeneration, "index.json"));
 });
+
+for (const malformed of [null, [], { generation: 3 }, true]) {
+  test(`unknown lease shape ${JSON.stringify(malformed)} preserves generations without breaking commit or release`, async (t) => {
+    const dir = await root(t),
+      first = call("prepare", config(dir));
+    const previous = await complete(first);
+    call("release", first);
+    const leases = join(first.root, "main/.leases");
+    await fs.mkdir(leases, { recursive: true });
+    const unknown = join(leases, "unknown.json");
+    await fs.writeFile(unknown, JSON.stringify(malformed));
+    const next = call("prepare", config(dir)),
+      latest = await complete(next);
+    call("release", next);
+    await fs.access(previous);
+    await fs.access(latest);
+    await fs.access(unknown);
+    await fs.rm(unknown);
+    const reader = call("prepare", { ...config(dir), "write-scope": "" });
+    call("release", reader);
+    await assert.rejects(fs.access(previous), { code: "ENOENT" });
+    await fs.access(latest);
+  });
+}

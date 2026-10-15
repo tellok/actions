@@ -316,3 +316,35 @@ for (const [start, end] of [
     assert.equal(f.state.release, undefined);
   });
 }
+
+for (const [field, value] of [
+  ["name", "changed"],
+  ["prerelease", true],
+]) {
+  test(`changed release ${field} during upload blocks publication`, async (t) => {
+    const f = await fixture(t),
+      upload = f.api.uploadAsset;
+    f.api.uploadAsset = async (...args) => {
+      await upload(...args);
+      f.state.release[field] = value;
+    };
+    await assert.rejects(
+      ensureRelease(f.options),
+      /identity changed before publication/,
+    );
+    assert.equal(f.calls.includes("publish"), false);
+  });
+  test(`changed release ${field} during publication cannot return success or promote Latest`, async (t) => {
+    const f = await fixture(t),
+      publish = f.api.publishRelease;
+    f.api.publishRelease = async () => {
+      await publish();
+      f.state.release[field] = value;
+    };
+    await assert.rejects(
+      ensureRelease({ ...f.options, latest: true }),
+      /publication is unconfirmed/,
+    );
+    assert.equal(f.state.latest, 99);
+  });
+}
