@@ -457,3 +457,33 @@ test("result paths reject an unresolved directory symlink ancestor", async (t) =
     /Unresolved symlink/,
   );
 });
+
+for (const kind of [
+  "malformed",
+  "missing",
+  "symlink",
+  "oversized",
+  "directory",
+]) {
+  test(`later ${kind} upload file is rejected before any S3 operation`, async (t) => {
+    const f = await fixture(t);
+    let later = "later.bin";
+    if (kind === "malformed") later = "../escape.bin";
+    if (kind === "symlink") await fs.symlink("image.bin", join(f.dir, later));
+    if (kind === "oversized") {
+      f.transfer.maxBytes = 11;
+      await fs.writeFile(join(f.dir, later), Buffer.alloc(12));
+    }
+    if (kind === "directory") await fs.mkdir(join(f.dir, later));
+    await assert.rejects(
+      f.transfer.upload({
+        identity,
+        prefix: "build/1/1/10",
+        directory: f.dir,
+        files: ["image.bin", later],
+      }),
+    );
+    assert.deepEqual(f.calls, []);
+    assert.equal(f.objects.size, 0);
+  });
+}

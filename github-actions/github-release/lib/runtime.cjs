@@ -248,7 +248,9 @@ function validate(options) {
     !options.name ||
     !options.start ||
     !options.end ||
-    options.start === options.end
+    options.start === options.end ||
+    options.start.includes(options.end) ||
+    options.end.includes(options.start)
   )
     throw new Error("Invalid release identity or notes markers");
 }

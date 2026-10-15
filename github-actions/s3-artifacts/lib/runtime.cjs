@@ -262,14 +262,17 @@ class Transfer {
       objects: [],
     };
     const root = await fs.realpath(directory);
+    const prepared = [];
     for (const name of files) {
       fileName(name);
       const source = resolve(root, name);
+      const entry = await fs.lstat(source);
       if (
-        (await fs.lstat(source)).isSymbolicLink() ||
+        !entry.isFile() ||
+        entry.isSymbolicLink() ||
         (await fs.realpath(source)) !== source
       )
-        throw new Error("Symlink artifacts are not allowed");
+        throw new Error("Artifacts must be regular files without symlinks");
       const size = (await fs.stat(source)).size;
       if (!Number.isSafeInteger(size) || size < 1 || size > this.maxBytes)
         throw new Error("Artifact size is invalid");
@@ -279,6 +282,10 @@ class Transfer {
         size,
         hash: await hashFile(source),
       };
+      prepared.push({ source, object });
+    }
+    for (const { source, object } of prepared) {
+      const { size } = object;
       if (!(await this.head(object.key))) {
         try {
           await this.request(

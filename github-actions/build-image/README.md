@@ -26,3 +26,7 @@ cache-root 为空时为普通无持久缓存构建。运行环境需要 Docker�
 运行前提：Actions Runner >=2.327.1，包含 github-script v8 使用的 Node 24 Action 运行时；本仓库安装和程序化调用需 Node >=22。详见[根说明](../../README.md)。
 
 镜像必须可加载到本地 Docker：`platforms` 为空或仅含一个 `os/arch[/variant]`；多平台列表在构建前拒绝。两个字节容量限制必须为非负整数（0 表示不限制），`keep-generations` 必须为正整数；数值及全部 read-scopes/write-scope 名称均在创建租约/临时导出前校验，避免后续无效作用域遗留前面已经取得的租约。
+
+缓存布局为 `cache-root/namespaces-v2/<完整 namespace 的 SHA-256>/scopes/<scope>/`：namespace 整体编码，scope 只位于固定层级内，父子 namespace 不会共用锁或进入另一 namespace 的 current。旧的直接路径布局不读取、不迁移也不删除，因此升级后首次构建冷启动；旧缓存须由维护者确认没有使用者后另行回收。
+
+每次完整发布在同一命名空间锁内登记递增发布序号及完成时间；keep-generations 按发布序号保留最近完整代，仍保护 current 与活动读租约，不按开始顺序或目录 mtime 判断。未知发布序号保守不回收。prepare 成功后，若 runner 状态目录创建、保存或输出失败，会先用内存状态 release 再报错；回滚失败也会单独包含在错误中，不能把资源未释放称为清理成功。

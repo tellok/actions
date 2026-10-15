@@ -158,6 +158,12 @@ async function preparation(t, command) {
   f.refs.main = sha;
   delete f.refs.versions;
   f.setPrs([]);
+  const previousWorkspace = process.env.GITHUB_WORKSPACE;
+  process.env.GITHUB_WORKSPACE = dir;
+  t.after(() => {
+    if (previousWorkspace === undefined) delete process.env.GITHUB_WORKSPACE;
+    else process.env.GITHUB_WORKSPACE = previousWorkspace;
+  });
   return {
     dir,
     f,
@@ -169,7 +175,7 @@ async function preparation(t, command) {
       payload: { repository: { default_branch: "main", fork: false } },
     },
     inputs: {
-      path: dir,
+      path: ".",
       branch: "versions",
       "version-command": command,
       "allowed-paths": "allowed.md\n.changeset",
@@ -294,3 +300,93 @@ test("unsupported platform is rejected by detect and maintain before workspace a
   `,
   ]);
 });
+
+test("repository paths resolve canonically within the workspace", async (t) => {
+  const workspace = await fs.mkdtemp(join(tmpdir(), "version-workspace-"));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await fs.mkdir(join(workspace, "nested"));
+  await fs.symlink("nested", join(workspace, "alias"));
+  const { resolveRepositoryPath } = require("../lib/version.cjs");
+  assert.equal(
+    await resolveRepositoryPath(workspace, "."),
+    await fs.realpath(workspace),
+  );
+  assert.equal(
+    await resolveRepositoryPath(workspace, "alias"),
+    await fs.realpath(join(workspace, "nested")),
+  );
+  assert.equal(
+    await resolveRepositoryPath(workspace, join(workspace, "nested")),
+    await fs.realpath(join(workspace, "nested")),
+  );
+});
+for (const mode of ["absolute", "parent", "symlink"]) {
+  test(`initial detection and maintain reject an external checkout through ${mode} path`, async (t) => {
+    const p = await preparation(t, "printf 'must not run' > allowed.md");
+    const { execFileSync } = require("node:child_process"),
+      path = require("node:path"),
+      yaml = require("yaml");
+    const parent = await fs.mkdtemp(join(tmpdir(), "external-checkout-"));
+    t.after(() => fs.rm(parent, { recursive: true, force: true }));
+    const external = join(parent, "repo");
+    execFileSync("git", ["clone", "--quiet", p.dir, external]);
+    if (mode === "symlink") await fs.symlink(external, join(p.dir, "escape"));
+    p.inputs.path =
+      mode === "absolute"
+        ? external
+        : mode === "parent"
+          ? path.relative(p.dir, external)
+          : "escape";
+    const impl = require("../lib/version.cjs");
+    await assert.rejects(
+      impl.prepare({
+        inputs: p.inputs,
+        context: p.context,
+        github: p.f.github,
+      }),
+      /escapes GITHUB_WORKSPACE/,
+    );
+    const action = yaml.parse(
+      await fs.readFile(join(__dirname, "../action.yml"), "utf8"),
+    );
+    const code = action.runs.steps.find((step) => step.id === "prepare").with
+      .script;
+    const AsyncFunction = Object.getPrototypeOf(
+      async function () {},
+    ).constructor;
+    await assert.rejects(
+      new AsyncFunction(
+        "require",
+        "process",
+        "core",
+        "github",
+        "context",
+        code,
+      )(
+        require,
+        {
+          env: {
+            ...process.env,
+            GITHUB_WORKSPACE: p.dir,
+            TOOLKIT_ACTION_PATH: path.resolve(__dirname, ".."),
+            TOOLKIT_INPUTS: JSON.stringify({
+              ...p.inputs,
+              operation: "detect",
+            }),
+          },
+        },
+        {
+          setOutput() {
+            throw new Error("Detection must not emit outputs");
+          },
+        },
+        p.f.github,
+        p.context,
+      ),
+      /escapes GITHUB_WORKSPACE/,
+    );
+    await assert.rejects(fs.access(join(external, "allowed.md")), {
+      code: "ENOENT",
+    });
+  });
+}

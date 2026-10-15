@@ -72,11 +72,25 @@ runs:
           const input = JSON.parse(process.env.TOOLKIT_INPUTS);
           input.execution = `${context.repo.owner}/${context.repo.repo}/${context.runId}/${process.env.GITHUB_RUN_ATTEMPT}/${context.job}`;
           const result = JSON.parse(require('node:child_process').execFileSync('python3', [path.join(process.env.TOOLKIT_ACTION_PATH,'lib/cache.py'),'prepare'], {input:JSON.stringify(input),encoding:'utf8'}));
-          const directory = await fs.mkdtemp(path.join(process.env.RUNNER_TEMP,'ci-cache-'));
-          const state = path.join(directory,'state.json');
-          await fs.writeFile(state,JSON.stringify(result),{mode:0o600});
-          core.setOutput('state',state); core.setOutput('imports',result.imports);
-          core.setOutput('export',result.export ? `type=local,dest=${result.export},mode=max` : '');
+          let directory;
+          try {
+            directory = await fs.mkdtemp(path.join(process.env.RUNNER_TEMP,'ci-cache-'));
+            const state = path.join(directory,'state.json');
+            await fs.writeFile(state,JSON.stringify(result),{mode:0o600});
+            core.setOutput('state',state); core.setOutput('imports',result.imports);
+            core.setOutput('export',result.export ? `type=local,dest=${result.export},mode=max` : '');
+          } catch (error) {
+            const errors = [error];
+            try {
+              require('node:child_process').execFileSync('python3',[path.join(process.env.TOOLKIT_ACTION_PATH,'lib/cache.py'),'release'],{input:JSON.stringify(result),encoding:'utf8'});
+            } catch (cleanupError) { errors.push(cleanupError); }
+            if (directory) {
+              try { await fs.rm(directory,{recursive:true,force:true}); }
+              catch (cleanupError) { errors.push(cleanupError); }
+            }
+            if (errors.length > 1) throw new AggregateError(errors,'Cache state persistence and cleanup failed');
+            throw error;
+          }
     - name: Prepare official Buildx
       uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       with:

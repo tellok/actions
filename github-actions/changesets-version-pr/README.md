@@ -29,7 +29,7 @@ PR 写入使用社区维护的 [create-pull-request](https://github.com/peter-ev
 
 maintain 需要可信目标分支事件、干净 checkout、contents:write 和 pull-requests:write。detect 只读。Changeset 消费是否合法、来源证明与发布资格由调用方负责。GITHUB_TOKEN 创建的 PR 不保证触发另一个 workflow；需要原生触发时由调用方选择已授权 App token。组件不会额外 dispatch 检查。
 
-`path` 必须指向 checkout 的仓库根目录，不能指向仓库内的子项目。对子项目使用相对根目录的 `changeset-directory` 和 `allowed-paths`；需要在子目录运行 CLI 时，在 `version-command` 中切换目录。组件会在版本准备前核对这一边界。
+`path` 必须指向 GITHUB_WORKSPACE 内 checkout 的仓库根目录，不能指向仓库内的子项目。初始检测及维护前都会对 workspace 和候选路径取 realpath 并检查包含关系，不允许通过绝对路径、上级相对路径或符号链接定位工作区外部仓库；写入器使用已经核实的规范路径。对子项目使用相对根目录的 `changeset-directory` 和 `allowed-paths`；需要在子目录运行 CLI 时，在 `version-command` 中切换目录。组件会在版本准备前核对这一边界。
 
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
 

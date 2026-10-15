@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local BuildKit generations with short POSIX locks and conservative reader leases."""
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -72,7 +73,8 @@ def prepare(config):
     namespace = config.get('cache-namespace', '').split('/')
     if not namespace or any(not part for part in namespace):
         raise ValueError('Explicit cache namespace is required')
-    root = contained(base, base.joinpath(*(segment(part) for part in namespace)))
+    namespace_key = hashlib.sha256('/'.join(segment(part) for part in namespace).encode()).hexdigest()
+    root = contained(base, base / 'namespaces-v2' / namespace_key / 'scopes')
     read_scopes = list(dict.fromkeys(segment(scope) for scope in config.get('read-scopes', '').split()))
     write_scope = config.get('write-scope', '')
     if write_scope:
@@ -110,6 +112,13 @@ def size(path):
     return sum(item.stat().st_size for item in path.rglob('*') if item.is_file() and not item.is_symlink())
 
 
+def publication_order(path):
+    value = json.loads((path / '.publication.json').read_text())['sequence']
+    if type(value) is not int or value < 1:
+        raise ValueError('Invalid cache publication sequence')
+    return value
+
+
 def gc_scope(root, scope, keep):
     directory = contained(root, root / segment(scope))
     selected = current(root, scope)
@@ -120,7 +129,10 @@ def gc_scope(root, scope, keep):
             protected.add(segment(value['generation']))
         except (ValueError, KeyError, OSError):
             return  # Unknown liveness is never permission to delete a generation.
-    generations = sorted(directory.glob('complete-*'), key=lambda p: p.stat().st_mtime, reverse=True)
+    try:
+        generations = sorted(directory.glob('complete-*'), key=publication_order, reverse=True)
+    except (OSError, ValueError, KeyError, TypeError):
+        return  # Unknown publication order is not permission to delete a generation.
     protected.update(path.name for path in generations[:keep])
     for path in generations:
         if path.name not in protected:
@@ -139,6 +151,8 @@ def commit(state):
         raise ValueError('Incomplete cache export')
     json.loads(index.read_text())
     with locked(root):
+        sequence = max((publication_order(path) for path in pending.parent.glob('complete-*')), default=0) + 1
+        atomic_json(pending / '.publication.json', {'sequence': sequence, 'completed_at': time.time()})
         if (state['max_bytes'] and size(pending) > state['max_bytes']) or (state['max_total'] and size(Path(state['base'])) > state['max_total']):
             shutil.rmtree(pending)
             return {'published': False, 'reason': 'capacity-limit'}

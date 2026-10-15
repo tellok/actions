@@ -112,8 +112,8 @@ test("read-only scopes and path escapes cannot overwrite shared cache", async (t
   );
   const evil = join(dir, "elsewhere");
   await fs.mkdir(evil);
-  await fs.mkdir(join(dir, "example/project/main"), { recursive: true });
-  await fs.symlink(evil, join(dir, "example/project/main/current"));
+  await fs.mkdir(join(state.root, "main"), { recursive: true });
+  await fs.symlink(evil, join(state.root, "main/current"));
   assert.throws(() => call("prepare", config(dir)));
 });
 
@@ -157,12 +157,175 @@ for (const [label, invalid] of [
   ["write scope", { "write-scope": "../invalid" }],
 ]) {
   test(`malformed ${label} fails before acquiring any reader lease`, async (t) => {
-    const dir = await root(t), initial = call("prepare", config(dir));
+    const dir = await root(t),
+      initial = call("prepare", config(dir));
     const generation = await complete(initial);
     call("release", initial);
-    assert.throws(() => call("prepare", { ...config(dir), ...invalid }), /Invalid cache namespace or scope/);
-    assert.deepEqual(await fs.readdir(join(initial.root, "main/.leases")).catch(() => []), []);
-    assert.equal((await fs.readdir(join(initial.root, "main"))).some(name => name.startsWith("pending-")), false);
-    assert.equal(await fs.realpath(join(initial.root, "main/current")), generation);
+    assert.throws(
+      () => call("prepare", { ...config(dir), ...invalid }),
+      /Invalid cache namespace or scope/,
+    );
+    assert.deepEqual(
+      await fs.readdir(join(initial.root, "main/.leases")).catch(() => []),
+      [],
+    );
+    assert.equal(
+      (await fs.readdir(join(initial.root, "main"))).some((name) =>
+        name.startsWith("pending-"),
+      ),
+      false,
+    );
+    assert.equal(
+      await fs.realpath(join(initial.root, "main/current")),
+      generation,
+    );
   });
 }
+
+for (const failure of ["mkdtemp", "writeFile"]) {
+  test(`cache state ${failure} failure releases real leases and pending export`, async (t) => {
+    const dir = await root(t),
+      initial = call("prepare", config(dir));
+    const generation = await complete(initial);
+    call("release", initial);
+    const runnerTemp = join(dir, "runner-temp");
+    await fs.mkdir(runnerTemp);
+    const yaml = require("yaml"),
+      nodePath = require("node:path");
+    const action = yaml.parse(
+      await fs.readFile(join(__dirname, "../action.yml"), "utf8"),
+    );
+    const code = action.runs.steps.find((step) => step.id === "cache").with
+      .script;
+    const AsyncFunction = Object.getPrototypeOf(
+      async function () {},
+    ).constructor;
+    const operations = [],
+      outputs = [];
+    const injectedRequire = (name) => {
+      if (name === "node:fs/promises")
+        return {
+          ...fs,
+          [failure]: async () => {
+            throw new Error("injected state persistence failure");
+          },
+        };
+      if (name === "node:child_process")
+        return {
+          execFileSync: (program, args, options) => {
+            operations.push(args[1]);
+            return execFileSync(program, args, options);
+          },
+        };
+      return require(name);
+    };
+    await assert.rejects(
+      new AsyncFunction("require", "process", "context", "core", code)(
+        injectedRequire,
+        {
+          env: {
+            ...process.env,
+            RUNNER_TEMP: runnerTemp,
+            TOOLKIT_ACTION_PATH: nodePath.resolve(__dirname, ".."),
+            TOOLKIT_INPUTS: JSON.stringify(config(dir)),
+          },
+        },
+        { repo: { owner: "example", repo: "project" }, runId: 1, job: "build" },
+        { setOutput: (...args) => outputs.push(args) },
+      ),
+      /injected state persistence failure/,
+    );
+    assert.deepEqual(operations, ["prepare", "release"]);
+    assert.deepEqual(outputs, []);
+    assert.deepEqual(await fs.readdir(join(initial.root, "main/.leases")), []);
+    assert.equal(
+      (await fs.readdir(join(initial.root, "main"))).some((name) =>
+        name.startsWith("pending-"),
+      ),
+      false,
+    );
+    assert.deepEqual(await fs.readdir(runnerTemp), []);
+    assert.equal(
+      await fs.realpath(join(initial.root, "main/current")),
+      generation,
+    );
+  });
+}
+test("retention keeps the latest publications despite reversed writer start order and directory timestamps", async (t) => {
+  const dir = await root(t),
+    settings = { ...config(dir), "keep-generations": "2", "read-scopes": "" };
+  const slow = call("prepare", settings),
+    fast = call("prepare", settings);
+  const fastGeneration = await complete(fast, "fast");
+  const slowGeneration = await complete(slow, "slow");
+  call("release", fast);
+  call("release", slow);
+  await fs.utimes(
+    fastGeneration,
+    new Date("2040-01-01"),
+    new Date("2040-01-01"),
+  );
+  await fs.utimes(
+    slowGeneration,
+    new Date("2000-01-01"),
+    new Date("2000-01-01"),
+  );
+  const third = call("prepare", settings),
+    latest = await complete(third, "third");
+  call("release", third);
+  await assert.rejects(fs.access(fastGeneration), { code: "ENOENT" });
+  await fs.access(slowGeneration);
+  await fs.access(latest);
+  assert.equal(await fs.realpath(join(third.root, "main/current")), latest);
+});
+test("parent and nested namespaces cannot share locks, scopes or complete generations", async (t) => {
+  const dir = await root(t);
+  const outer = call("prepare", {
+    ...config(dir),
+    "cache-namespace": "a",
+    "read-scopes": "",
+    "write-scope": "b",
+  });
+  const generation = await complete(outer, "outer");
+  const before = await fs.readdir(generation);
+  const inner = call("prepare", {
+    ...config(dir),
+    "cache-namespace": "a/b",
+    "read-scopes": "",
+    "write-scope": "current",
+  });
+  assert.notEqual(inner.root, outer.root);
+  assert.equal(inner.export.startsWith(outer.root + "/"), false);
+  assert.equal(outer.export.startsWith(inner.root + "/"), false);
+  await complete(inner, "inner");
+  call("release", inner);
+  call("release", outer);
+  assert.deepEqual(await fs.readdir(generation), before);
+  assert.equal(await fs.realpath(join(outer.root, "b/current")), generation);
+  assert.match(
+    await fs.readFile(join(generation, "index.json"), "utf8"),
+    /outer/,
+  );
+});
+test("new cache layout does not import or delete legacy overlapping directories", async (t) => {
+  const dir = await root(t),
+    legacy = join(dir, "a/b"),
+    oldGeneration = join(legacy, "complete-old");
+  await fs.mkdir(oldGeneration, { recursive: true });
+  await fs.writeFile(join(oldGeneration, "index.json"), "{}");
+  await fs.symlink("complete-old", join(legacy, "current"));
+  const state = call("prepare", {
+    ...config(dir),
+    "cache-namespace": "a",
+    "read-scopes": "b",
+    "write-scope": "b",
+  });
+  assert.equal(state.imports, "");
+  await complete(state);
+  call("release", state);
+  assert.equal(
+    await fs.realpath(join(legacy, "current")),
+    await fs.realpath(oldGeneration),
+  );
+  await fs.access(join(oldGeneration, "index.json"));
+});

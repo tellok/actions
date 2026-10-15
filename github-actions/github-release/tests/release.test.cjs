@@ -300,3 +300,19 @@ for (const [field, value] of [
     assert.equal(f.calls.includes("publish"), false);
   });
 }
+
+for (const [start, end] of [
+  ["<!--notes", "<!--notes:end-->"],
+  ["<!--notes:start-->", "<!--notes"],
+]) {
+  test(`overlapping release markers ${start} / ${end} fail before remote writes`, async (t) => {
+    const f = await fixture(t);
+    await assert.rejects(
+      ensureRelease({ ...f.options, start, end }),
+      /Invalid release identity or notes markers/,
+    );
+    assert.deepEqual(f.calls, []);
+    assert.equal(f.state.tag, undefined);
+    assert.equal(f.state.release, undefined);
+  });
+}

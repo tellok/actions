@@ -82,7 +82,8 @@ runs:
           const impl = require(path.join(process.env.TOOLKIT_ACTION_PATH, 'lib/version.cjs'));
           const inputs = JSON.parse(process.env.TOOLKIT_INPUTS);
           if (!['detect', 'maintain'].includes(inputs.operation)) throw new Error('Invalid operation');
-          const pending = await impl.detect(path.resolve(process.env.GITHUB_WORKSPACE, inputs.path), inputs['changeset-directory']);
+          const repository = await impl.resolveRepositoryPath(process.env.GITHUB_WORKSPACE, inputs.path);
+          const pending = await impl.detect(repository, inputs['changeset-directory']);
           core.setOutput('found', String(pending.found)); core.setOutput('count', pending.count);
           core.setOutput('changed', 'false');
           if (inputs.operation === 'detect' || !pending.found) return;
@@ -92,7 +93,7 @@ runs:
           await fs.writeFile(file, JSON.stringify(state), { mode: 0o600 });
           core.setOutput('state', file);
           await impl.installLeaseHook(state);
-          for (const [key, value] of Object.entries({changed:'true',base:state.base,expected:state.expected,body:state.bodyPath})) core.setOutput(key,value);
+          for (const [key, value] of Object.entries({changed:'true',path:state.cwd,base:state.base,expected:state.expected,body:state.bodyPath})) core.setOutput(key,value);
     - name: Create or update the version PR
       id: writer
       if: steps.prepare.outputs.changed == 'true'
@@ -103,7 +104,7 @@ runs:
         CI_EXPECTED_VERSION_SHA: ${{ steps.prepare.outputs.expected }}
       with:
         token: ${{ inputs.github-token }}
-        path: ${{ inputs.path }}
+        path: ${{ steps.prepare.outputs.path }}
         base: ${{ steps.prepare.outputs.base }}
         branch: ${{ inputs.branch }}
         add-paths: ${{ inputs.allowed-paths }}

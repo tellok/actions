@@ -2,7 +2,7 @@
 const fs = require("node:fs/promises");
 const { execFileSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { resolve, join } = require("node:path");
+const { resolve, join, relative, isAbsolute, sep } = require("node:path");
 const SHA = /^[a-f0-9]{40}$/;
 const git = (cwd, ...args) =>
   execFileSync("git", args, {
@@ -34,6 +34,14 @@ function managedBody(previous, content, start, end) {
 function assertSupportedPlatform(platform = process.platform) {
   if (!["linux", "darwin"].includes(platform))
     throw new Error("Changesets version PR supports only Linux and macOS");
+}
+async function resolveRepositoryPath(workspace, repositoryPath = ".") {
+  const root = await fs.realpath(workspace);
+  const candidate = await fs.realpath(resolve(root, repositoryPath));
+  const local = relative(root, candidate);
+  if (local === ".." || local.startsWith(".." + sep) || isAbsolute(local))
+    throw new Error("Repository path escapes GITHUB_WORKSPACE");
+  return candidate;
 }
 async function detect(cwd, directory = ".changeset") {
   assertSupportedPlatform();
@@ -188,7 +196,7 @@ async function refreshBody({ github, context, state }) {
 }
 async function prepare({ inputs, github, context }) {
   assertSupportedPlatform();
-  const cwd = resolve(
+  const cwd = await resolveRepositoryPath(
     process.env.GITHUB_WORKSPACE || process.cwd(),
     inputs.path || ".",
   );
@@ -396,6 +404,7 @@ async function restore(state) {
 
 module.exports = {
   detect,
+  resolveRepositoryPath,
   assertSupportedPlatform,
   commandEnvironment,
   refreshBody,
