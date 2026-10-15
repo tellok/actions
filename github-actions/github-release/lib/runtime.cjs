@@ -283,6 +283,7 @@ async function ensureRelease({
   files,
   operation = "publish",
   latest = false,
+  prerelease = false,
   start,
   end,
   tempRoot,
@@ -292,6 +293,10 @@ async function ensureRelease({
   if (!["draft", "publish", "recover"].includes(operation))
     throw new Error("Unknown release operation");
   if (typeof latest !== "boolean") throw new Error("latest must be a boolean");
+  if (typeof prerelease !== "boolean")
+    throw new Error("prerelease must be a boolean");
+  if (prerelease && latest)
+    throw new Error("A prerelease cannot be promoted to Latest");
   // Validate caller notes and the complete manifest before any remote writes.
   managedBody("", notes, start, end);
   if (
@@ -361,7 +366,7 @@ async function ensureRelease({
         name,
         body,
         draft: true,
-        prerelease: false,
+        prerelease,
         make_latest: "false",
       });
     } catch {
@@ -376,7 +381,7 @@ async function ensureRelease({
       value.id !== id ||
       value.tag_name !== tag ||
       value.name !== name ||
-      value.prerelease ||
+      value.prerelease !== prerelease ||
       value.target_commitish !== source
     )
       throw new Error(message);
@@ -490,6 +495,12 @@ async function run({ inputs, github, context, core }) {
   const latest = inputs.latest === undefined ? "false" : inputs.latest;
   if (!["true", "false"].includes(latest))
     throw new Error('latest input must be exactly "true" or "false"');
+  const prerelease =
+    inputs.prerelease === undefined ? "false" : inputs.prerelease;
+  if (!["true", "false"].includes(prerelease))
+    throw new Error('prerelease input must be exactly "true" or "false"');
+  if (prerelease === "true" && latest === "true")
+    throw new Error("A prerelease cannot be promoted to Latest");
   const repository = `${context.repo.owner}/${context.repo.repo}`;
   const api = createGitHubClient({ repository, github });
   const notes = await fs.readFile(inputs["notes-file"], "utf8");
@@ -512,6 +523,7 @@ async function run({ inputs, github, context, core }) {
       files,
       operation: inputs.operation,
       latest: latest === "true",
+      prerelease: prerelease === "true",
       start: inputs["body-start"],
       end: inputs["body-end"],
       tempRoot,

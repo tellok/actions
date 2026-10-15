@@ -1,33 +1,40 @@
 # github-release
 
-使用 GitHub 官方 Octokit SDK 维护草稿、上传附件、回读校验和公开 Release。发布前需要所有显式附件校验成功；同名冲突失败而不删除。标签必须指向调用方指定的完整 source SHA。创建响应未知按标签发现草稿，随后固定 Release ID。
+English | [简体中文](./README.zh-CN.md)
+
+Manage a draft, upload verified assets, publish a GitHub release, or recover an existing release using the official Octokit SDK. The caller supplies its release policy, exact source SHA, notes, asset manifest, and stable or prerelease identity. The component does not decide versions or authorize publication.
 
 ```yaml
-- uses: your-org/ci-toolkit/github-actions/github-release@<commit-sha>
+- uses: your-org/ci-toolkit/github-actions/github-release@<full-commit-sha>
   with:
     source: ${{ github.sha }}
-    tag: v1.2.3
-    name: "1.2.3"
+    tag: v2.0.0-beta.0
+    name: "2.0.0-beta.0"
     notes-file: build/notes.md
     assets-file: build/assets.json
+    prerelease: "true"
     latest: "false"
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-assets-file：`[{"name":"image.tar.gz","path":"build/image.tar.gz","hash":"sha256:<64-char-hash>"}]`。附件小于 2 GiB；GitHub 返回 digest 时精确比对，否则下载校验。body-start/body-end 外部正文保留。已有 tag、name、target_commitish 和固定 ID 必须匹配，不追认冲突 Release。operation:draft 只准备草稿；publish 附件齐备后公开；recover 必须是既有标签/Release，补附件且不变更 Latest。latest:true 仅发布路径显式晋升并回读 Latest。默认 false。
+## Release identity and recovery
 
-权限由 workflow 设置为 contents:write。组件不决定 SemVer、产品发布资格、变更日志或历史恢复白名单；调用方生成说明和附件清单。单独使用组件不意味着获得发布许可。
+`prerelease` accepts exactly `"true"` or `"false"` and defaults to `"false"`. Programmatic `ensureRelease` takes a boolean. A prerelease cannot request `latest: "true"`; this combination and malformed flags fail before remote access. Creation, publication, recovery, and final verification enforce the declared prerelease identity. Existing stable releases are not silently reclassified. Recovery of a prerelease must also specify `prerelease: "true"`. This input controls GitHub Releases and does not change npm dist-tags.
 
-完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
+`operation: draft` prepares a draft and rejects already public releases. `publish` verifies every declared asset before making the release public. `recover` requires an existing matching tag and release, fills missing assets, and never changes Latest. Stable callers can explicitly request `latest: "true"` during publication; the default is false. Both string flags accept only their exact lower-case spellings.
 
-运行前提：Actions Runner >=2.327.1，包含 github-script v8 使用的 Node 24 Action 运行时；本仓库安装和程序化调用需 Node >=22。详见[根说明](../../README.md)。
+Tags must resolve to the caller's complete source SHA. Release ID, tag, name, source, prerelease status, managed notes, and the complete declared asset set are verified throughout delivery. Conflicts fail without deleting files, moving tags, or retracting a public release. An unknown creation response is recovered by finding the tag and then binding to one fixed release ID.
 
-每个附件必须声明有效 SHA-256 hash 并匹配本地文件，后续远程确认始终使用该声明值。publish/recover 的空附件清单、无效 hash 和包含管理标记的生成说明均在创建标签或草稿之前拒绝。body-start/body-end 还必须互不包含，不能只满足两者不相等。draft 遇到已公开 Release 直接失败，不修改公开说明；草稿返回前重新核对标签指向及固定 Release ID、tag/name/source 和草稿状态，不能沿用创建或正文更新前的身份。
+## Notes and assets
 
-更新说明前基于最新读取的 Release 正文重建管理块。公开前重新核对完整附件集及标签来源，返回成功前再次核对；发现并发标签移动或附件删除/替换会失败，不自行撤回已公开版本或移动标签。GitHub 的独立 API 请求不提供覆盖标签、正文及附件的整体事务，调用方仍应限制并发发布者和可变标签权限；回读只能确认观察时的状态，不能锁住后续修改。
+`assets-file` contains a JSON array such as `[{"name":"archive.tar.gz","path":"build/archive.tar.gz","hash":"sha256:<64-character-hash>"}]`. Every asset must have a declared SHA-256 matching its local bytes and be smaller than 2 GiB. Remote digests are compared when available; otherwise assets are downloaded and hashed. Publication and recovery reject empty manifests, invalid hashes, and undeclared remote assets. Existing conflicting assets are never overwritten or deleted.
 
-公开前、公开后及返回前均核对同一 Release 的完整固定身份，包括 name、prerelease 状态和 source；上传期间身份变化会阻止公开，公开后发现不符不会继续晋升 Latest 或报告成功。
+Asset names allow ASCII letters, digits, underscores, hyphens, and internal periods. Leading or trailing periods and characters that the service normalizes are rejected before remote writes.
 
-assets-file 是完整附件集合，公开前、晋升 Latest 前及最终确认时都拒绝未声明的远端附件；不会擅自删除额外文件。latest 输入仅接受精确字符串 true/false，程序化 ensureRelease 使用布尔值；拼写错误在 I/O 前失败。附件名限定 ASCII 字母、数字、下划线、连字符及内部句点，拒绝首尾句点或会触发服务端改名的特殊字符，避免上传后找不到原名。
+Notes outside `body-start`/`body-end` are preserved. The markers must be distinct and must not contain each other; generated notes cannot contain either marker. Managed notes are rechecked after updates, asset transfers, and publication. Concurrent edits outside the managed block are allowed. Independent GitHub API calls are not a transaction: callers must coordinate concurrent publishers and mutable tag permissions. Read-back confirms the observed state without locking later changes.
 
-返回草稿、公开前、公开后及最终确认都会核对当前受管理说明仍与调用方内容一致；并发删除或改写管理块会失败，块外人工说明的并发编辑可以保留。远程资源没有跨请求事务，核对之后的并发修改仍需调用方协调。
+## Permissions and runtime
+
+The calling workflow grants `contents: write`. All upstream Actions are pinned to full commits; callers should pin this component to a full repository commit as well. See [action.yml](./action.yml) for inputs and defaults.
+
+Actions Runner >=2.327.1 must provide the Node 24 Action runtime used by github-script v8. Local package installation and programmatic usage require Node >=22. A setup-node step does not upgrade the runner's own Action runtime. See the [repository README](../../README.md) for component distribution and validation commands.
