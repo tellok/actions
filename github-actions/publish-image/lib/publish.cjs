@@ -10,9 +10,8 @@ const { createGunzip } = require("node:zlib");
 const digest = /^sha256:[a-f0-9]{64}$/;
 const output = (program, args) =>
   execFileSync(program, args, {
-    encoding: "utf8",
     maxBuffer: 8 * 1024 ** 2,
-  }).trim();
+  });
 async function hashFile(path) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);

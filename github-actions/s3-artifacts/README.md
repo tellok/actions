@@ -29,3 +29,5 @@ delete 需要 record-file 与 consumers-file（`[{"id":20,"status":"completed"}]
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
 
 运行前提：Actions Runner >=2.327.1，包含 github-script v8 使用的 Node 24 Action 运行时；本仓库安装和程序化调用需 Node >=22。详见[根说明](../../README.md)。
+
+上传设置 output-file 时，先在结果目录预留并同步独占暂存文件，提前拒绝目录、无效父路径及不可写位置；失败清理暂存并保留旧记录，成功同步完整结果后同目录 rename 替换。远端传输成功即输出生产登记日志，随后即使结果落盘遭遇新的故障，也可从该日志恢复登记；预留文件不能消除后续磁盘耗尽或进程崩溃风险。

@@ -331,7 +331,7 @@ test("numeric-looking destination tags remain valid when explicitly supplied as 
 
 async function layeredArchive(
   t,
-  { count = 4, corrupt = false, symlink = false } = {},
+  { count = 4, corrupt = false, symlink = false, configPadding = false } = {},
 ) {
   const fs = require("node:fs/promises"),
     path = require("node:path"),
@@ -362,12 +362,13 @@ async function layeredArchive(
     await fs.rm(path.join(dir, entries[0]));
     await fs.symlink(outside, path.join(dir, entries[0]));
   }
-  const config = JSON.stringify({
+  const configJson = JSON.stringify({
     os: "linux",
     architecture: "amd64",
     config: fixture().found.image.Config,
     rootfs: { type: "layers", diff_ids: diffIds },
   });
+  const config = configPadding ? "\r\n \t" + configJson + "\n" : configJson;
   const configId = crypto.createHash("sha256").update(config).digest("hex");
   await fs.writeFile(path.join(dir, configId + ".json"), config);
   await fs.writeFile(
@@ -447,4 +448,9 @@ test("single-extraction layer validation rejects symlinks without reading or cha
     await require("node:fs/promises").readFile(f.outside, "utf8"),
     "must remain unchanged",
   );
+});
+
+test("image config identity hashes the exact archived bytes including JSON whitespace", async (t) => {
+  const f = await layeredArchive(t, { configPadding: true });
+  await require("../lib/publish.cjs").validateArchive(f.archive, f.identity);
 });

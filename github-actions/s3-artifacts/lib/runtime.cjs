@@ -137,6 +137,27 @@ async function validateOutputPath(record, directory, outputFile) {
   }
 }
 
+async function reserveOutput(outputFile) {
+  const target = await canonicalPath(outputFile);
+  const entry = await statIfPresent(target);
+  if (entry && !entry.isFile())
+    throw new Error("Result output-file must be a regular file");
+  await fs.mkdir(dirname(target), { recursive: true });
+  const staging = resolve(dirname(target), ".artifact-result-" + randomUUID());
+  const handle = await fs.open(staging, "wx", 0o600);
+  try {
+    const { bytesWritten } = await handle.write("{}\n", 0, "utf8");
+    if (bytesWritten !== 3)
+      throw new Error("Result reservation write was incomplete");
+    await handle.sync();
+    return { target, staging, handle };
+  } catch (error) {
+    await handle.close();
+    await fs.rm(staging, { force: true });
+    throw error;
+  }
+}
+
 function createClient(config) {
   const endpoint = new URL(config.endpoint);
   if (
@@ -508,68 +529,92 @@ async function run({ inputs, core }) {
   const identity = JSON.parse(
     await fs.readFile(inputs["identity-file"], "utf8"),
   );
-  let result;
-  if (inputs.operation === "upload")
-    result = await transfer.upload({
-      identity,
-      prefix: inputs.prefix,
-      directory: inputs.directory,
-      files: JSON.parse(inputs.files),
-      outputFile: inputs["output-file"],
-    });
-  else {
-    const record = JSON.parse(await fs.readFile(inputs["record-file"], "utf8"));
-    if (inputs.operation === "download") {
-      validateRecord(record, identity);
-      await validateOutputPath(record, inputs.directory, inputs["output-file"]);
-      result = await transfer.download(record, {
+  let reservation;
+  try {
+    if (inputs.operation === "upload" && inputs["output-file"])
+      reservation = await reserveOutput(inputs["output-file"]);
+    let result;
+    if (inputs.operation === "upload")
+      result = await transfer.upload({
         identity,
+        prefix: inputs.prefix,
         directory: inputs.directory,
-        allowedFiles: JSON.parse(inputs.files),
+        files: JSON.parse(inputs.files),
+        outputFile: inputs["output-file"],
       });
-    } else if (inputs.operation === "delete")
-      result = await transfer.remove(record, {
-        identity,
-        consumers: JSON.parse(
-          await fs.readFile(inputs["consumers-file"], "utf8"),
-        ),
-      });
-    else if (inputs.operation === "register") {
-      validateRecord(record, identity);
-      for (const object of record.objects) {
-        const head = await transfer.head(object.key, object.versionId);
-        if (
-          !head ||
-          (object.versionId !== undefined &&
-            head.VersionId !== object.versionId)
-        )
-          throw new Error("Registered S3 object version is missing");
-        if (head.VersionId !== undefined) object.versionId = head.VersionId;
-        const path = resolve(inputs.directory, ".register-" + randomUUID());
-        try {
-          await transfer.read(object.key, path, object);
-        } finally {
-          await fs.rm(path, { force: true });
+    else {
+      const record = JSON.parse(
+        await fs.readFile(inputs["record-file"], "utf8"),
+      );
+      if (inputs.operation === "download") {
+        validateRecord(record, identity);
+        await validateOutputPath(
+          record,
+          inputs.directory,
+          inputs["output-file"],
+        );
+        result = await transfer.download(record, {
+          identity,
+          directory: inputs.directory,
+          allowedFiles: JSON.parse(inputs.files),
+        });
+      } else if (inputs.operation === "delete")
+        result = await transfer.remove(record, {
+          identity,
+          consumers: JSON.parse(
+            await fs.readFile(inputs["consumers-file"], "utf8"),
+          ),
+        });
+      else if (inputs.operation === "register") {
+        validateRecord(record, identity);
+        for (const object of record.objects) {
+          const head = await transfer.head(object.key, object.versionId);
+          if (
+            !head ||
+            (object.versionId !== undefined &&
+              head.VersionId !== object.versionId)
+          )
+            throw new Error("Registered S3 object version is missing");
+          if (head.VersionId !== undefined) object.versionId = head.VersionId;
+          const path = resolve(inputs.directory, ".register-" + randomUUID());
+          try {
+            await transfer.read(object.key, path, object);
+          } finally {
+            await fs.rm(path, { force: true });
+          }
         }
-      }
-      result = record;
-    } else throw new Error("Unknown S3 operation");
+        result = record;
+      } else throw new Error("Unknown S3 operation");
+    }
+    core.setOutput("record", JSON.stringify(result));
+    if (result.objects)
+      core.info("CI_ARTIFACT_REGISTRATION " + JSON.stringify(result));
+    if (result.deleted !== undefined) core.setOutput("deleted", result.deleted);
+    if (reservation) {
+      await reservation.handle.truncate(0);
+      await reservation.handle.writeFile(
+        JSON.stringify(result, null, 2) + "\n",
+      );
+      await reservation.handle.sync();
+      await reservation.handle.close();
+      await fs.rename(reservation.staging, reservation.target);
+    } else if (inputs["output-file"]) {
+      await fs.mkdir(dirname(resolve(inputs["output-file"])), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        inputs["output-file"],
+        JSON.stringify(result, null, 2) + "\n",
+        { mode: 0o600 },
+      );
+    }
+    return result;
+  } finally {
+    if (reservation) {
+      await reservation.handle.close();
+      await fs.rm(reservation.staging, { force: true });
+    }
   }
-  if (inputs["output-file"]) {
-    await fs.mkdir(dirname(resolve(inputs["output-file"])), {
-      recursive: true,
-    });
-    await fs.writeFile(
-      inputs["output-file"],
-      JSON.stringify(result, null, 2) + "\n",
-      { mode: 0o600 },
-    );
-  }
-  core.setOutput("record", JSON.stringify(result));
-  if (result.objects)
-    core.info("CI_ARTIFACT_REGISTRATION " + JSON.stringify(result));
-  if (result.deleted !== undefined) core.setOutput("deleted", result.deleted);
-  return result;
 }
 module.exports = {
   hashFile,

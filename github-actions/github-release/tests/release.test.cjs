@@ -457,3 +457,74 @@ test("safe checksum and platform archive names are accepted", async (t) => {
   });
   assert.deepEqual(f.calls, ["tag", "draft"]);
 });
+
+for (const change of ["replace", "remove"]) {
+  test(`${change} managed notes during upload blocks publication`, async (t) => {
+    const f = await fixture(t),
+      upload = f.api.uploadAsset;
+    f.api.uploadAsset = async (...args) => {
+      await upload(...args);
+      f.state.release.body =
+        change === "remove" ? "human note only" : "start\nother notes\nend";
+    };
+    await assert.rejects(
+      ensureRelease(f.options),
+      /Managed release notes changed/,
+    );
+    assert.equal(f.calls.includes("publish"), false);
+  });
+}
+test("managed notes changed at publication prevent success and Latest promotion", async (t) => {
+  const f = await fixture(t),
+    publish = f.api.publishRelease;
+  f.api.publishRelease = async (...args) => {
+    await publish(...args);
+    f.state.release.body = "start\nother notes\nend";
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, latest: true }),
+    /Managed release notes changed/,
+  );
+  assert.equal(f.state.latest, 99);
+});
+test("managed notes changed at Latest update are rejected before success", async (t) => {
+  const f = await fixture(t),
+    update = f.api.updateRelease;
+  f.api.updateRelease = async (id, data) => {
+    await update(id, data);
+    if (data.make_latest) f.state.release.body = "human note only";
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, latest: true }),
+    /Managed release notes changed/,
+  );
+});
+test("outside notes edited during upload remain allowed and preserved", async (t) => {
+  const f = await fixture(t),
+    upload = f.api.uploadAsset;
+  f.api.uploadAsset = async (...args) => {
+    await upload(...args);
+    f.state.release.body =
+      "fresh human note\n" + f.state.release.body + "\nfooter";
+  };
+  await ensureRelease(f.options);
+  assert.equal(
+    f.state.release.body,
+    "fresh human note\nstart\nnotes\nend\nfooter",
+  );
+});
+
+test("draft confirmation rejects changed managed notes", async (t) => {
+  const f = await fixture(t),
+    get = f.api.getReleaseById;
+  let reads = 0;
+  f.api.getReleaseById = async (...args) => {
+    const result = await get(...args);
+    if (++reads === 2) result.body = "human note only";
+    return result;
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, operation: "draft" }),
+    /Managed release notes changed/,
+  );
+});

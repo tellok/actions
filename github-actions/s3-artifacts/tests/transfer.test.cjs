@@ -572,3 +572,203 @@ test("upload accepts a separate result path without changing the source", async 
     "image bytes",
   );
 });
+
+for (const invalid of ["directory", "file-parent"]) {
+  test(`upload refuses a ${invalid} result destination before S3 writes`, async (t) => {
+    const f = await fixture(t),
+      identityFile = join(f.dir, "identity.json");
+    await fs.writeFile(identityFile, JSON.stringify(identity));
+    let outputFile;
+    if (invalid === "directory") {
+      outputFile = join(f.dir, "result-dir");
+      await fs.mkdir(outputFile);
+    } else {
+      await fs.writeFile(join(f.dir, "parent-file"), "keep");
+      outputFile = join(f.dir, "parent-file", "record.json");
+    }
+    const { run } = require(
+      process.env.TOOLKIT_TEST_DIST === "true"
+        ? "../dist/index.js"
+        : "../lib/runtime.cjs",
+    );
+    await assert.rejects(
+      run({
+        inputs: {
+          operation: "upload",
+          endpoint: "http://127.0.0.1:9",
+          region: "test",
+          bucket: "test-bucket",
+          "access-key-id": "test-key",
+          "secret-access-key": "test-secret",
+          "identity-file": identityFile,
+          directory: f.dir,
+          prefix: "build/1/1/10",
+          files: '["image.bin"]',
+          "output-file": outputFile,
+        },
+        core: {
+          setSecret() {},
+          setOutput() {
+            throw new Error("Unexpected success");
+          },
+        },
+      }),
+      invalid === "directory" ? /must be a regular file/ : /ENOTDIR/,
+    );
+    assert.equal(
+      (await fs.readdir(f.dir)).some((n) => n.startsWith(".artifact-result-")),
+      false,
+    );
+    assert.equal(
+      await fs.readFile(join(f.dir, "image.bin"), "utf8"),
+      "image bytes",
+    );
+  });
+}
+test("failed upload validation releases its reserved result file without replacing old output", async (t) => {
+  const f = await fixture(t),
+    identityFile = join(f.dir, "identity.json"),
+    outputFile = join(f.dir, "record.json");
+  await fs.writeFile(identityFile, JSON.stringify(identity));
+  await fs.writeFile(outputFile, "previous record");
+  const { run } = require(
+    process.env.TOOLKIT_TEST_DIST === "true"
+      ? "../dist/index.js"
+      : "../lib/runtime.cjs",
+  );
+  await assert.rejects(
+    run({
+      inputs: {
+        operation: "upload",
+        endpoint: "http://127.0.0.1:9",
+        region: "test",
+        bucket: "test-bucket",
+        "access-key-id": "test-key",
+        "secret-access-key": "test-secret",
+        "identity-file": identityFile,
+        directory: f.dir,
+        prefix: "build/1/1/10",
+        files: '["missing.bin"]',
+        "output-file": outputFile,
+      },
+      core: {
+        setSecret() {},
+        setOutput() {
+          throw new Error("Unexpected success");
+        },
+      },
+    }),
+    /ENOENT/,
+  );
+  assert.equal(await fs.readFile(outputFile, "utf8"), "previous record");
+  assert.equal(
+    (await fs.readdir(f.dir)).some((n) => n.startsWith(".artifact-result-")),
+    false,
+  );
+});
+
+async function uploadInputs(t) {
+  const f = await fixture(t),
+    identityFile = join(f.dir, "identity.json");
+  await fs.writeFile(identityFile, JSON.stringify(identity));
+  return {
+    f,
+    inputs: {
+      operation: "upload",
+      endpoint: "http://127.0.0.1:9",
+      region: "test",
+      bucket: "test-bucket",
+      "access-key-id": "test-key",
+      "secret-access-key": "test-secret",
+      "identity-file": identityFile,
+      directory: f.dir,
+      prefix: "build/1/1/10",
+      files: '["image.bin"]',
+      "output-file": join(f.dir, "record.json"),
+    },
+  };
+}
+for (const failure of ["open-permission", "sync-space"]) {
+  test(`result reservation ${failure} failure precedes upload and leaves no temporary file`, async (t) => {
+    const { f, inputs } = await uploadInputs(t),
+      original = fs.open;
+    fs.open = async (path, ...args) => {
+      if (!String(path).includes(".artifact-result-"))
+        return original(path, ...args);
+      if (failure === "open-permission")
+        throw Object.assign(new Error("denied result reservation"), {
+          code: "EACCES",
+        });
+      const handle = await original(path, ...args);
+      handle.sync = async () => {
+        throw Object.assign(new Error("full result reservation"), {
+          code: "ENOSPC",
+        });
+      };
+      return handle;
+    };
+    t.after(() => {
+      fs.open = original;
+    });
+    const { run } = require(
+      process.env.TOOLKIT_TEST_DIST === "true"
+        ? "../dist/index.js"
+        : "../lib/runtime.cjs",
+    );
+    await assert.rejects(run({ inputs, core: { setSecret() {} } }), {
+      code: failure === "open-permission" ? "EACCES" : "ENOSPC",
+    });
+    assert.equal(
+      (await fs.readdir(f.dir)).some((n) => n.startsWith(".artifact-result-")),
+      false,
+    );
+  });
+}
+test("successful upload atomically installs a complete reserved result and logs its record", async (t) => {
+  const { f, inputs } = await uploadInputs(t);
+  const impl = require(
+    process.env.TOOLKIT_TEST_DIST === "true"
+      ? "../dist/index.js"
+      : "../lib/runtime.cjs",
+  );
+  const record = await f.upload(),
+    original = impl.Transfer.prototype.upload;
+  impl.Transfer.prototype.upload = async () => {
+    assert.equal(
+      (await fs.readdir(f.dir)).filter((n) => n.startsWith(".artifact-result-"))
+        .length,
+      1,
+    );
+    return record;
+  };
+  t.after(() => {
+    impl.Transfer.prototype.upload = original;
+  });
+  const messages = [],
+    outputs = {};
+  await impl.run({
+    inputs,
+    core: {
+      setSecret() {},
+      info(message) {
+        messages.push(message);
+      },
+      setOutput(key, value) {
+        outputs[key] = value;
+      },
+    },
+  });
+  assert.deepEqual(
+    JSON.parse(await fs.readFile(inputs["output-file"], "utf8")),
+    record,
+  );
+  assert.deepEqual(JSON.parse(outputs.record), record);
+  assert.equal(
+    messages[0],
+    "CI_ARTIFACT_REGISTRATION " + JSON.stringify(record),
+  );
+  assert.equal(
+    (await fs.readdir(f.dir)).some((n) => n.startsWith(".artifact-result-")),
+    false,
+  );
+});

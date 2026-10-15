@@ -392,6 +392,12 @@ async function ensureRelease({
     if (release.body !== body)
       throw new Error("Release notes write is unconfirmed");
   }
+  const assertNotes = (value) => {
+    if (managedBody(value.body || "", notes, start, end) !== value.body)
+      throw new Error(
+        "Managed release notes changed during preparation or publication",
+      );
+  };
   if (operation === "draft") {
     release = await api.getReleaseById(id);
     assertIdentity(
@@ -400,6 +406,7 @@ async function ensureRelease({
     );
     if (!release.draft)
       throw new Error("Draft release identity changed before confirmation");
+    assertNotes(release);
     if ((await api.getTag(tag)) !== source)
       throw new Error("Release tag changed during draft preparation");
     return { id, url: release.html_url, published: false };
@@ -448,6 +455,7 @@ async function ensureRelease({
   await confirmAssets();
   release = await api.getReleaseById(id);
   assertIdentity(release, "Release identity changed before publication");
+  assertNotes(release);
   await confirmTag();
   if (release.draft) {
     try {
@@ -455,6 +463,7 @@ async function ensureRelease({
     } catch {}
     release = await api.getReleaseById(id);
     assertIdentity(release, "Release publication is unconfirmed");
+    assertNotes(release);
     if (release.draft) throw new Error("Release publication is unconfirmed");
   }
   if (latest && operation !== "recover") {
@@ -468,6 +477,7 @@ async function ensureRelease({
   }
   release = await api.getReleaseById(id);
   assertIdentity(release, "Published release identity changed");
+  assertNotes(release);
   if (release.draft) throw new Error("Published release identity changed");
   await confirmAssets();
   await confirmTag();
