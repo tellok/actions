@@ -348,3 +348,112 @@ for (const [field, value] of [
     assert.equal(f.state.latest, 99);
   });
 }
+
+test("undeclared existing draft assets block publication without deleting remote content", async (t) => {
+  const f = await fixture(t);
+  await ensureRelease({ ...f.options, operation: "draft" });
+  const extra = {
+    name: "old.bin",
+    size: 15,
+    state: "uploaded",
+    digest: f.files[0].hash,
+  };
+  f.state.assets.push(extra);
+  await assert.rejects(ensureRelease(f.options), /undeclared or missing asset/);
+  assert.equal(f.calls.includes("publish"), false);
+  assert.ok(f.state.assets.includes(extra));
+});
+test("asset added at publication blocks success and Latest promotion", async (t) => {
+  const f = await fixture(t),
+    publish = f.api.publishRelease;
+  f.api.publishRelease = async () => {
+    await publish();
+    f.state.assets.push({
+      name: "unexpected.bin",
+      size: 15,
+      state: "uploaded",
+      digest: f.files[0].hash,
+    });
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, latest: true }),
+    /undeclared or missing asset/,
+  );
+  assert.equal(f.state.latest, 99);
+});
+test("extra assets added during Latest update are rejected at final confirmation", async (t) => {
+  const f = await fixture(t),
+    update = f.api.updateRelease;
+  f.api.updateRelease = async (id, data) => {
+    await update(id, data);
+    if (data.make_latest === "true")
+      f.state.assets.push({ name: "unexpected.bin" });
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, latest: true }),
+    /undeclared or missing asset/,
+  );
+});
+for (const latest of ["True", "treu", "", true, 1, null]) {
+  test(`release action rejects invalid latest input ${JSON.stringify(latest)} before any I/O`, async () => {
+    const { run } = require(
+      process.env.TOOLKIT_TEST_DIST === "true"
+        ? "../dist/index.js"
+        : "../lib/runtime.cjs",
+    );
+    await assert.rejects(
+      run({
+        inputs: {
+          operation: "publish",
+          latest,
+          "notes-file": "/does-not-exist",
+        },
+        github: {},
+        context: {},
+        core: {},
+      }),
+      /latest input must be exactly/,
+    );
+  });
+}
+for (const latest of ["false", 1, null]) {
+  test(`programmatic release rejects non-boolean latest ${JSON.stringify(latest)}`, async (t) => {
+    const f = await fixture(t);
+    await assert.rejects(
+      ensureRelease({ ...f.options, latest }),
+      /latest must be a boolean/,
+    );
+    assert.deepEqual(f.calls, []);
+  });
+}
+for (const name of [
+  ".checksums",
+  "artifact.",
+  "with space.zip",
+  "file#1.zip",
+  "a\\b.zip",
+  "文件.zip",
+]) {
+  test(`normalized asset name ${JSON.stringify(name)} fails before creating remote resources`, async (t) => {
+    const f = await fixture(t);
+    await assert.rejects(
+      ensureRelease({ ...f.options, files: [{ ...f.files[0], name }] }),
+      /Invalid release asset path\/name/,
+    );
+    assert.deepEqual(f.calls, []);
+    assert.equal(f.state.tag, undefined);
+    assert.equal(f.state.release, undefined);
+  });
+}
+test("safe checksum and platform archive names are accepted", async (t) => {
+  const f = await fixture(t);
+  await ensureRelease({
+    ...f.options,
+    operation: "draft",
+    files: [
+      { ...f.files[0], name: "SHA256SUMS" },
+      { ...f.files[0], name: "linux-amd64_v1.tar.gz" },
+    ],
+  });
+  assert.deepEqual(f.calls, ["tag", "draft"]);
+});

@@ -26,7 +26,7 @@ inputs:
     description: Managed release notes closing marker
     default: "<!-- ci-toolkit:release:end -->"
   latest:
-    description: Explicit caller-verified Latest promotion; recovery always ignores this
+    description: Exact true or false; caller-verified Latest promotion, ignored for recovery
     default: "false"
   github-token:
     description: Token scoped to the caller's release repository

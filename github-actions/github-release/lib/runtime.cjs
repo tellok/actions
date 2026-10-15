@@ -291,6 +291,7 @@ async function ensureRelease({
   validate(options);
   if (!["draft", "publish", "recover"].includes(operation))
     throw new Error("Unknown release operation");
+  if (typeof latest !== "boolean") throw new Error("latest must be a boolean");
   // Validate caller notes and the complete manifest before any remote writes.
   managedBody("", notes, start, end);
   if (
@@ -307,9 +308,10 @@ async function ensureRelease({
         "Every release asset requires a valid declared SHA-256 hash",
       );
     if (
-      !file.name ||
+      typeof file.name !== "string" ||
+      !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(file.name) ||
+      file.name.endsWith(".") ||
       basename(file.name) !== file.name ||
-      /[\r\n]/.test(file.name) ||
       (await fs.lstat(file.path)).isSymbolicLink()
     )
       throw new Error("Invalid release asset path/name");
@@ -429,6 +431,13 @@ async function ensureRelease({
   };
   const confirmAssets = async () => {
     const assets = await api.listAssets(id);
+    if (
+      assets.length !== files.length ||
+      assets.some((asset) => !files.some((file) => file.name === asset.name))
+    )
+      throw new Error(
+        "Declared release asset set changed: undeclared or missing asset",
+      );
     for (const file of files) {
       const matching = assets.filter((asset) => asset.name === file.name);
       if (matching.length !== 1)
@@ -449,6 +458,8 @@ async function ensureRelease({
     if (release.draft) throw new Error("Release publication is unconfirmed");
   }
   if (latest && operation !== "recover") {
+    await confirmAssets();
+    await confirmTag();
     try {
       await api.updateRelease(id, { make_latest: "true" });
     } catch {}
@@ -466,6 +477,9 @@ async function ensureRelease({
 async function run({ inputs, github, context, core }) {
   if (!["draft", "publish", "recover"].includes(inputs.operation))
     throw new Error("Unknown release operation");
+  const latest = inputs.latest === undefined ? "false" : inputs.latest;
+  if (!["true", "false"].includes(latest))
+    throw new Error('latest input must be exactly "true" or "false"');
   const repository = `${context.repo.owner}/${context.repo.repo}`;
   const api = createGitHubClient({ repository, github });
   const notes = await fs.readFile(inputs["notes-file"], "utf8");
@@ -487,7 +501,7 @@ async function run({ inputs, github, context, core }) {
       notes,
       files,
       operation: inputs.operation,
-      latest: inputs.latest === "true",
+      latest: latest === "true",
       start: inputs["body-start"],
       end: inputs["body-end"],
       tempRoot,
