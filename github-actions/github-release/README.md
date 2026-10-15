@@ -19,3 +19,17 @@ assets-file：`[{"name":"image.tar.gz","path":"build/image.tar.gz","hash":"sha25
 权限由 workflow 设置为 contents:write。组件不决定 SemVer、产品发布资格、变更日志或历史恢复白名单；调用方生成说明和附件清单。单独使用组件不意味着获得发布许可。
 
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
+
+beta 等预发布由调用方显式传入 `prerelease: "true"`，默认 `"false"` 保持稳定版行为；不根据标签推断渠道。该值适用于 `draft`、`publish` 和 `recover`，且必须与既有 Release 的标记一致，不自动转换稳定版和预发布。`prerelease: "true"` 与 `latest: "true"` 组合在写入前失败（包括恢复操作）；预发布始终不晋升 Latest。恢复 beta Release 时同样需要传入 `prerelease: "true"`。
+
+```yaml
+- uses: your-org/ci-toolkit/github-actions/github-release@<commit-sha>
+  with:
+    source: ${{ github.sha }}
+    tag: v2.0.0-beta.1
+    name: "2.0.0-beta.1"
+    notes-file: build/notes.md
+    assets-file: build/assets.json
+    prerelease: "true"
+    latest: "false"
+```

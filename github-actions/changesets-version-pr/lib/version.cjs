@@ -40,6 +40,23 @@ async function detect(cwd, directory = ".changeset") {
       if (error.code === "ENOENT") return [];
       throw error;
     });
+  const preState = await fs
+    .readFile(join(candidate, "pre.json"), "utf8")
+    .then((content) => JSON.parse(content))
+    .catch((error) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+  if (
+    preState !== undefined &&
+    (!preState ||
+      !["pre", "exit"].includes(preState.mode) ||
+      !Array.isArray(preState.changesets) ||
+      !preState.changesets.every((id) => typeof id === "string"))
+  )
+    throw new Error("Invalid Changesets pre.json state");
+  // Exit mode must include consumed changesets for the stable release.
+  const consumed = new Set(preState?.mode === "pre" ? preState.changesets : []);
   const files = entries
     .filter(
       (entry) =>
@@ -48,6 +65,7 @@ async function detect(cwd, directory = ".changeset") {
         entry.name.endsWith(".md") &&
         entry.name.toLowerCase() !== "readme.md",
     )
+    .filter((entry) => !consumed.has(entry.name.slice(0, -3)))
     .map((entry) => entry.name)
     .sort();
   return { found: files.length > 0, count: files.length };

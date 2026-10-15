@@ -142,3 +142,77 @@ test("recovery uploads missing assets without changing Latest", async (t) => {
   assert.equal(f.state.latest, 99);
   assert.equal(f.calls.includes("publish"), false);
 });
+
+test("beta draft, publication and recovery preserve prerelease and Latest", async (t) => {
+  const f = await fixture(t);
+  const options = { ...f.options, tag: "v2.0.0-beta.1", name: "2.0.0-beta.1", prerelease: true };
+  await ensureRelease({ ...options, operation: "draft" });
+  assert.equal(f.state.release.prerelease, true);
+  assert.equal(f.state.release.draft, true);
+  assert.equal((await ensureRelease(options)).published, true);
+  assert.equal((await ensureRelease({ ...options, operation: "recover" })).published, true);
+  assert.equal(f.state.release.prerelease, true);
+  assert.equal(f.state.latest, 99);
+  assert.equal(f.calls.filter((call) => call === "draft").length, 1);
+});
+
+test("prerelease with Latest is rejected before writes for all operations", async (t) => {
+  const f = await fixture(t);
+  for (const operation of ["draft", "publish", "recover"]) {
+    await assert.rejects(ensureRelease({ ...f.options, operation, prerelease: true, latest: true }), /cannot be promoted/);
+  }
+  assert.deepEqual(f.calls, []);
+});
+
+test("existing stable and prerelease identities cannot be interchanged", async (t) => {
+  const f = await fixture(t);
+  await ensureRelease({ ...f.options, operation: "draft" });
+  f.calls.length = 0;
+  await assert.rejects(ensureRelease({ ...f.options, prerelease: true }), /identity mismatch/);
+  f.state.release.prerelease = true;
+  await assert.rejects(ensureRelease(f.options), /identity mismatch/);
+  assert.deepEqual(f.calls, []);
+});
+
+test("unknown beta creation outcome is recovered with prerelease identity", async (t) => {
+  const f = await fixture(t);
+  f.state.unknown = true;
+  assert.equal((await ensureRelease({ ...f.options, prerelease: true })).published, true);
+  assert.equal(f.state.release.prerelease, true);
+});
+
+test("publication read-back rejects a changed prerelease flag", async (t) => {
+  const f = await fixture(t);
+  f.api.publishRelease = async () => {
+    f.state.release.draft = false;
+    f.state.release.prerelease = false;
+  };
+  await assert.rejects(ensureRelease({ ...f.options, prerelease: true }), /publication is unconfirmed/);
+});
+
+test("stable releases still support explicit Latest promotion", async (t) => {
+  const f = await fixture(t);
+  await ensureRelease({ ...f.options, latest: true });
+  assert.equal(f.state.release.prerelease, false);
+  assert.equal(f.state.latest, 1);
+});
+
+test("Action entry point passes prerelease through to the API", async (t) => {
+  const f = await fixture(t);
+  const notes = join(f.dir, "notes.md");
+  await fs.writeFile(notes, "notes");
+  const requests = [];
+  const { run } = require("../lib/runtime.cjs");
+  const github = { request: async ({ method, url, data }) => {
+    requests.push({ method, url, data });
+    if (url.includes("/git/ref/")) return { data: { object: { type: "commit", sha: source } } };
+    if (url.includes("/releases/tags/")) throw { status: 404 };
+    if (method === "POST") return { data: f.state.release = { ...data, id: 1 } };
+    if (url.endsWith("/releases/1")) return { data: f.state.release };
+    return { data: [] };
+  } };
+  const inputs = { operation: "draft", source, tag: "v2-beta.1", name: "beta", prerelease: "true", "notes-file": notes, "body-start": "start", "body-end": "end" };
+  await run({ inputs, github, context: { repo: { owner: "example", repo: "app" } }, core: { setOutput() {} } });
+  assert.equal(requests.find((r) => r.method === "POST").data.prerelease, true);
+  await assert.rejects(run({ inputs: { ...inputs, prerelease: "yes" } }), /must be true or false/);
+});

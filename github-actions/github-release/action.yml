@@ -25,6 +25,9 @@ inputs:
   body-end:
     description: Managed release notes closing marker
     default: "<!-- ci-toolkit:release:end -->"
+  prerelease:
+    description: Explicit prerelease status; must match an existing release and cannot be combined with latest
+    default: "false"
   latest:
     description: Explicit caller-verified Latest promotion; recovery always ignores this
     default: "false"

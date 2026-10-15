@@ -106,3 +106,53 @@ test("managed body preserves external notes and confirmation rejects wrong head"
     /confirmed/,
   );
 });
+
+async function preFixture(t, directory = ".changeset") {
+  const root = await fs.mkdtemp(join(tmpdir(), "changesets-pre-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const dir = join(root, directory);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(join(dir, "used.md"), "---");
+  const writeState = (state) => fs.writeFile(join(dir, "pre.json"), JSON.stringify(state));
+  await writeState({ mode: "pre", tag: "beta", initialVersions: {}, changesets: ["used", "removed"] });
+  return { root, dir, writeState };
+}
+
+test("beta excludes consumed IDs and counts only newly added changesets", async (t) => {
+  const f = await preFixture(t);
+  assert.deepEqual(await detect(f.root), { found: false, count: 0 });
+  await fs.writeFile(join(f.dir, "fresh.md"), "---");
+  assert.deepEqual(await detect(f.root), { found: true, count: 1 });
+});
+
+test("exit mode retains consumed changesets for the stable release", async (t) => {
+  const f = await preFixture(t);
+  await f.writeState({ mode: "exit", changesets: ["used"] });
+  assert.deepEqual(await detect(f.root), { found: true, count: 1 });
+});
+
+test("custom changeset directory uses its own prerelease state", async (t) => {
+  const f = await preFixture(t, "packages/app/.changeset");
+  assert.deepEqual(await detect(f.root, "packages/app/.changeset"), { found: false, count: 0 });
+});
+
+test("invalid prerelease JSON or consumption state fails explicitly", async (t) => {
+  const f = await preFixture(t);
+  await fs.writeFile(join(f.dir, "pre.json"), "{");
+  await assert.rejects(detect(f.root), SyntaxError);
+  for (const state of [null, {}, { mode: "pre", changesets: "used" }, { mode: "pre", changesets: [1] }, { mode: "unknown", changesets: [] }]) {
+    await f.writeState(state);
+    await assert.rejects(detect(f.root), /Invalid Changesets/);
+  }
+});
+
+test("consumed-only beta skips the version command and GitHub access", async (t) => {
+  const f = await preFixture(t);
+  require("node:child_process").execFileSync("git", ["init", "-q", f.root]);
+  const { prepare } = require("../lib/version.cjs");
+  const result = await prepare({
+    inputs: { path: f.root, "version-command": "exit 99" },
+    github: {}, context: {},
+  });
+  assert.deepEqual(result, { found: false, count: 0, changed: false });
+});

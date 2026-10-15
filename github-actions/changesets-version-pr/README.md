@@ -1,5 +1,7 @@
 # changesets-version-pr
 
+`detect` 和 `maintain` 共用轻量检测：当所选 `changeset-directory` 的 `pre.json` 为 `mode: pre` 时，按无 `.md` 后缀的 changeset ID 排除 `changesets` 中已消费的文件；只有新增文件才继续版本准备。`mode: exit` 不排除这些文件，以便生成稳定版本；没有 `pre.json` 时沿用普通检测。JSON 损坏、模式或消费列表无效时明确失败，不当作空变更。检测仍只预筛候选，具体格式和发布项由调用方固定的 CLI 校验。
+
 检测未消费 Changesets，或创建/更新一个版本 PR。先由调用方用官方 setup-node 和固定的包管理器安装 Changesets CLI；空扫描不需要安装依赖。组件不构建、不发布、不会自行决定产品版本策略。
 
 PR 写入使用社区维护的 [create-pull-request](https://github.com/peter-evans/create-pull-request)。GitHub 没有官方版本 PR 写入 Action。组件在调用前核对目标和受管理分支 SHA，并通过 Git 原生 pre-push hook 与上游 force-with-lease 拒绝准备期间的并发分支变化；写入后核对 PR、单个来源提交和完整版本树。候选必须带 ownership-marker，人工分支或重复候选会失败。body-start/body-end 外的正文保留。

@@ -279,12 +279,17 @@ async function ensureRelease({
   files,
   operation = "publish",
   latest = false,
+  prerelease = false,
   start,
   end,
   tempRoot,
 }) {
   const options = { source, tag, name, start, end };
   validate(options);
+  if (typeof prerelease !== "boolean")
+    throw new Error("prerelease must be a boolean");
+  if (prerelease && latest)
+    throw new Error("A prerelease cannot be promoted to Latest");
   if (
     !Array.isArray(files) ||
     new Set(files.map((f) => f.name)).size !== files.length
@@ -341,7 +346,7 @@ async function ensureRelease({
         name,
         body,
         draft: true,
-        prerelease: false,
+        prerelease,
         make_latest: "false",
       });
     } catch {
@@ -356,7 +361,7 @@ async function ensureRelease({
     release.id !== id ||
     release.tag_name !== tag ||
     release.name !== name ||
-    release.prerelease ||
+    release.prerelease !== prerelease ||
     release.target_commitish !== source
   )
     throw new Error("Release ID identity mismatch");
@@ -396,7 +401,7 @@ async function ensureRelease({
       await api.publishRelease(id);
     } catch {}
     release = await api.getReleaseById(id);
-    if (release.draft || release.id !== id)
+    if (release.draft || release.id !== id || release.prerelease !== prerelease)
       throw new Error("Release publication is unconfirmed");
   }
   if (latest && operation !== "recover") {
@@ -412,6 +417,11 @@ async function ensureRelease({
 async function run({ inputs, github, context, core }) {
   if (!["draft", "publish", "recover"].includes(inputs.operation))
     throw new Error("Unknown release operation");
+  if (
+    inputs.prerelease !== undefined &&
+    !["true", "false"].includes(inputs.prerelease)
+  )
+    throw new Error("prerelease must be true or false");
   const repository = `${context.repo.owner}/${context.repo.repo}`;
   const api = createGitHubClient({ repository, github });
   const notes = await fs.readFile(inputs["notes-file"], "utf8");
@@ -434,6 +444,7 @@ async function run({ inputs, github, context, core }) {
       files,
       operation: inputs.operation,
       latest: inputs.latest === "true",
+      prerelease: inputs.prerelease === "true",
       start: inputs["body-start"],
       end: inputs["body-end"],
       tempRoot,
