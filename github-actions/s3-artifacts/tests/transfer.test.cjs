@@ -397,3 +397,63 @@ test("unknown PUT outcome with wrong producer metadata is rejected", async (t) =
   };
   await assert.rejects(f.upload(), /producer identity/);
 });
+
+for (const absolute of [false, true]) {
+  test(`download rejects a ${absolute ? "absolute" : "relative"} dangling result symlink before transfer`, async (t) => {
+    const f = await fixture(t),
+      record = await f.upload();
+    const out = join(f.dir, "out");
+    await fs.mkdir(out);
+    const output = join(out, "record.json");
+    await fs.symlink(absolute ? join(out, "image.bin") : "image.bin", output);
+    const identityFile = join(f.dir, "identity.json"),
+      recordFile = join(f.dir, "production.json");
+    await fs.writeFile(identityFile, JSON.stringify(identity));
+    await fs.writeFile(recordFile, JSON.stringify(record));
+    const { run } = require(
+      process.env.TOOLKIT_TEST_DIST === "true"
+        ? "../dist/index.js"
+        : "../lib/runtime.cjs",
+    );
+    await assert.rejects(
+      run({
+        inputs: {
+          operation: "download",
+          endpoint: "http://127.0.0.1:9",
+          region: "test",
+          bucket: "test-bucket",
+          "access-key-id": "test-key",
+          "secret-access-key": "test-secret",
+          "identity-file": identityFile,
+          "record-file": recordFile,
+          directory: out,
+          files: '["image.bin"]',
+          "output-file": output,
+        },
+        core: {
+          setSecret() {},
+          setOutput() {
+            throw new Error("Unexpected success output");
+          },
+        },
+      }),
+      /Unresolved symlink/,
+    );
+    assert.equal((await fs.lstat(output)).isSymbolicLink(), true);
+    await assert.rejects(fs.stat(join(out, "image.bin")), { code: "ENOENT" });
+  });
+}
+test("result paths reject an unresolved directory symlink ancestor", async (t) => {
+  const f = await fixture(t),
+    record = await f.upload();
+  await fs.symlink("missing-directory", join(f.dir, "dangling"));
+  const { validateOutputPath } = require(
+    process.env.TOOLKIT_TEST_DIST === "true"
+      ? "../dist/index.js"
+      : "../lib/runtime.cjs",
+  );
+  await assert.rejects(
+    validateOutputPath(record, f.dir, join(f.dir, "dangling/record.json")),
+    /Unresolved symlink/,
+  );
+});

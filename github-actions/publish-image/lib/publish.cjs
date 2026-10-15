@@ -268,6 +268,7 @@ async function publishVerified({
     image.includes("@") ||
     !Array.isArray(tags) ||
     !tags.length ||
+    Array.from(tags).some((tag) => typeof tag !== "string") ||
     new Set(tags).size !== tags.length ||
     tags.some((tag) => !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag)) ||
     !["exact", "source"].includes(existingPolicy)

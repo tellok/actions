@@ -12,6 +12,8 @@ const git = (cwd, ...args) =>
   }).trim();
 
 function managedBody(previous, content, start, end) {
+  if (content.includes(start) || content.includes(end))
+    throw new Error("Version PR content must not contain managed body markers");
   const starts = previous.split(start).length - 1;
   const ends = previous.split(end).length - 1;
   const block = `${start}\n${content}\n${end}`;
@@ -29,7 +31,12 @@ function managedBody(previous, content, start, end) {
   );
 }
 
+function assertSupportedPlatform(platform = process.platform) {
+  if (!["linux", "darwin"].includes(platform))
+    throw new Error("Changesets version PR supports only Linux and macOS");
+}
 async function detect(cwd, directory = ".changeset") {
+  assertSupportedPlatform();
   const root = await fs.realpath(cwd);
   const candidate = resolve(root, directory);
   if (!candidate.startsWith(root + "/") || directory.includes("\n"))
@@ -180,6 +187,7 @@ async function refreshBody({ github, context, state }) {
   await fs.writeFile(state.bodyPath, state.body, { mode: 0o600 });
 }
 async function prepare({ inputs, github, context }) {
+  assertSupportedPlatform();
   const cwd = resolve(
     process.env.GITHUB_WORKSPACE || process.cwd(),
     inputs.path || ".",
@@ -281,9 +289,6 @@ async function prepare({ inputs, github, context }) {
   state.tree = git(cwd, "write-tree");
   state.paths = [...all].sort();
   state.cwd = cwd;
-  state.temp = await fs.mkdtemp(
-    join(process.env.RUNNER_TEMP || require("node:os").tmpdir(), "ci-version-"),
-  );
   const content = inputs["body-file"]
     ? await fs.readFile(resolve(cwd, inputs["body-file"]), "utf8")
     : inputs.body || "";
@@ -292,6 +297,10 @@ async function prepare({ inputs, github, context }) {
   if (!state.start || !state.end || state.start === state.end)
     throw new Error("Distinct body markers are required");
   state.content = `${state.marker}\nSource: ${state.source}\n${content}`;
+  managedBody("", state.content, state.start, state.end);
+  state.temp = await fs.mkdtemp(
+    join(process.env.RUNNER_TEMP || require("node:os").tmpdir(), "ci-version-"),
+  );
   state.bodyPath = join(state.temp, "body.md");
   await refreshBody({ github, context, state });
   try {
@@ -387,6 +396,7 @@ async function restore(state) {
 
 module.exports = {
   detect,
+  assertSupportedPlatform,
   commandEnvironment,
   refreshBody,
   managedBody,

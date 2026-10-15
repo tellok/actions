@@ -73,12 +73,15 @@ def prepare(config):
     if not namespace or any(not part for part in namespace):
         raise ValueError('Explicit cache namespace is required')
     root = contained(base, base.joinpath(*(segment(part) for part in namespace)))
+    read_scopes = list(dict.fromkeys(segment(scope) for scope in config.get('read-scopes', '').split()))
+    write_scope = config.get('write-scope', '')
+    if write_scope:
+        segment(write_scope)
     root.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
     readers, imports = [], []
-    write_scope = config.get('write-scope', '')
     with locked(root):
-        for scope in dict.fromkeys(config.get('read-scopes', '').split()):
+        for scope in read_scopes:
             target = current(root, scope)
             if target:
                 leases = root / scope / '.leases'

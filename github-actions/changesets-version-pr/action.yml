@@ -1,5 +1,5 @@
 name: Changesets version PR
-description: Detect pending changesets and maintain one version PR using a caller-pinned CLI and a leased upstream PR writer
+description: Detect pending changesets and maintain one version PR on Linux/macOS using a caller-pinned CLI and a leased upstream PR writer
 inputs:
   operation:
     description: detect or maintain

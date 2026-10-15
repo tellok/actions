@@ -103,8 +103,6 @@ test("managed body preserves external notes and confirmation rejects wrong head"
       context,
       state: { ...(await preflight(args(f))), body: "managed" },
       number: 1,
-      state: "open",
-      merged: false,
       head: "c".repeat(40),
     }),
     /confirmed/,
@@ -253,3 +251,46 @@ for (const [label, change] of [
     );
   });
 }
+
+for (const input of ["body", "body-file"]) {
+  for (const marker of ["start", "end"]) {
+    test(`version PR rejects ${marker} marker from ${input}`, async (t) => {
+      const p = await preparation(
+        t,
+        input === "body-file"
+          ? `printf 'contains ${marker} marker' > allowed.md`
+          : "printf 'versions' > allowed.md",
+      );
+      p.inputs[input] =
+        input === "body-file" ? "allowed.md" : `contains ${marker} marker`;
+      await assert.rejects(
+        require("../lib/version.cjs").prepare({
+          inputs: p.inputs,
+          context: p.context,
+          github: p.f.github,
+        }),
+        /must not contain managed body markers/,
+      );
+    });
+  }
+}
+test("version PR platform policy accepts Linux/macOS and rejects Windows", () => {
+  const { assertSupportedPlatform } = require("../lib/version.cjs");
+  assert.doesNotThrow(() => assertSupportedPlatform("linux"));
+  assert.doesNotThrow(() => assertSupportedPlatform("darwin"));
+  assert.throws(() => assertSupportedPlatform("win32"), /only Linux and macOS/);
+});
+test("unsupported platform is rejected by detect and maintain before workspace access", () => {
+  const { execFileSync } = require("node:child_process");
+  const modulePath = require.resolve("../lib/version.cjs");
+  execFileSync(process.execPath, [
+    "-e",
+    `
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const impl = require(${JSON.stringify(modulePath)});
+    Promise.allSettled([impl.detect('/does-not-exist'), impl.prepare({})]).then(results => {
+      if (results.some(result => result.status !== 'rejected' || !/only Linux and macOS/.test(result.reason.message))) process.exit(1);
+    }).catch(() => process.exit(1));
+  `,
+  ]);
+});

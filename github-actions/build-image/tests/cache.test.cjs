@@ -151,3 +151,18 @@ test("invalid numeric limits create no lease or pending export", async (t) => {
     assert.deepEqual(leases, []);
   }
 });
+
+for (const [label, invalid] of [
+  ["later read scope", { "read-scopes": "main ../invalid" }],
+  ["write scope", { "write-scope": "../invalid" }],
+]) {
+  test(`malformed ${label} fails before acquiring any reader lease`, async (t) => {
+    const dir = await root(t), initial = call("prepare", config(dir));
+    const generation = await complete(initial);
+    call("release", initial);
+    assert.throws(() => call("prepare", { ...config(dir), ...invalid }), /Invalid cache namespace or scope/);
+    assert.deepEqual(await fs.readdir(join(initial.root, "main/.leases")).catch(() => []), []);
+    assert.equal((await fs.readdir(join(initial.root, "main"))).some(name => name.startsWith("pending-")), false);
+    assert.equal(await fs.realpath(join(initial.root, "main/current")), generation);
+  });
+}

@@ -297,3 +297,34 @@ test("source reuse policy remains available without forcing a new image push", a
   );
   assert.deepEqual(f.calls, ["verify"]);
 });
+
+for (const [label, tags] of [
+  ["null", [null]],
+  ["boolean", [true]],
+  ["number", [1]],
+  ["mixed coerced duplicates", [1, "1"]],
+  ["object", [{}]],
+  ["duplicate strings", ["1", "1"]],
+]) {
+  test(`publication rejects ${label} tags before any registry operation`, async () => {
+    const f = fixture();
+    f.docker.lookup = async () => {
+      throw new Error("Registry must not be accessed");
+    };
+    await assert.rejects(
+      publish({ ...options(f), tags }),
+      /Invalid publication references/,
+    );
+    assert.deepEqual(f.calls, ["verify"]);
+  });
+}
+test("numeric-looking destination tags remain valid when explicitly supplied as strings", async () => {
+  const f = fixture();
+  const tags = ["1", "null", "true"];
+  await publish({ ...options(f), tags });
+  for (const tag of tags)
+    assert.equal(
+      f.refs.get("registry.test/demo:" + tag).digest,
+      f.found.digest,
+    );
+});

@@ -385,8 +385,22 @@ async function ensureRelease({
     if (release.body !== body)
       throw new Error("Release notes write is unconfirmed");
   }
-  if (operation === "draft")
-    return { id, url: release.html_url, published: !release.draft };
+  if (operation === "draft") {
+    release = await api.getReleaseById(id);
+    if (
+      !release ||
+      release.id !== id ||
+      release.tag_name !== tag ||
+      release.name !== name ||
+      release.target_commitish !== source ||
+      release.prerelease ||
+      !release.draft
+    )
+      throw new Error("Draft release identity changed before confirmation");
+    if ((await api.getTag(tag)) !== source)
+      throw new Error("Release tag changed during draft preparation");
+    return { id, url: release.html_url, published: false };
+  }
   for (const file of files) {
     const existing = (await api.listAssets(id)).filter(
       (asset) => asset.name === file.name,

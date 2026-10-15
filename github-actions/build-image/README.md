@@ -25,4 +25,4 @@ cache-root 为空时为普通无持久缓存构建。运行环境需要 Docker�
 
 运行前提：Actions Runner >=2.327.1，包含 github-script v8 使用的 Node 24 Action 运行时；本仓库安装和程序化调用需 Node >=22。详见[根说明](../../README.md)。
 
-镜像必须可加载到本地 Docker：`platforms` 为空或仅含一个 `os/arch[/variant]`；多平台列表在构建前拒绝。两个字节容量限制必须为非负整数（0 表示不限制），`keep-generations` 必须为正整数；全部在创建租约/临时导出前校验。
+镜像必须可加载到本地 Docker：`platforms` 为空或仅含一个 `os/arch[/variant]`；多平台列表在构建前拒绝。两个字节容量限制必须为非负整数（0 表示不限制），`keep-generations` 必须为正整数；数值及全部 read-scopes/write-scope 名称均在创建租约/临时导出前校验，避免后续无效作用域遗留前面已经取得的租约。

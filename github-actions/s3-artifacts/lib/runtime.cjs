@@ -104,6 +104,14 @@ async function canonicalPath(path) {
     return await fs.realpath(absolute);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
+    const entry = await fs.lstat(absolute).catch((statError) => {
+      if (statError.code === "ENOENT") return undefined;
+      throw statError;
+    });
+    if (entry?.isSymbolicLink())
+      throw new Error(
+        "Unresolved symlink is not allowed in artifact result paths",
+      );
     return resolve(await canonicalPath(dirname(absolute)), basename(absolute));
   }
 }

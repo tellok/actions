@@ -248,3 +248,55 @@ test("asset confirmation remains bound to caller hash when local bytes change", 
   await assert.rejects(ensureRelease(f.options), /digest conflict/);
   assert.equal(f.calls.includes("publish"), false);
 });
+
+test("tag movement during draft creation cannot return success", async (t) => {
+  const f = await fixture(t),
+    create = f.api.createRelease;
+  f.api.createRelease = async (data) => {
+    const release = await create(data);
+    f.state.tag = "b".repeat(40);
+    return release;
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, operation: "draft" }),
+    /tag changed during draft/,
+  );
+  assert.equal(f.calls.includes("publish"), false);
+});
+test("tag movement during draft notes update cannot return success", async (t) => {
+  const f = await fixture(t);
+  await ensureRelease({ ...f.options, operation: "draft" });
+  const update = f.api.updateRelease;
+  f.api.updateRelease = async (...args) => {
+    await update(...args);
+    f.state.tag = "b".repeat(40);
+  };
+  await assert.rejects(
+    ensureRelease({ ...f.options, operation: "draft", notes: "updated notes" }),
+    /tag changed during draft/,
+  );
+  assert.equal(f.calls.includes("publish"), false);
+});
+for (const [field, value] of [
+  ["id", 2],
+  ["tag_name", "v2.0.0"],
+  ["name", "other"],
+  ["target_commitish", "b".repeat(40)],
+  ["draft", false],
+]) {
+  test(`draft confirmation rejects changed ${field} identity`, async (t) => {
+    const f = await fixture(t),
+      get = f.api.getReleaseById;
+    let reads = 0;
+    f.api.getReleaseById = async (id) => {
+      const release = await get(id);
+      if (++reads === 2) return { ...release, [field]: value };
+      return release;
+    };
+    await assert.rejects(
+      ensureRelease({ ...f.options, operation: "draft" }),
+      /Draft release identity changed/,
+    );
+    assert.equal(f.calls.includes("publish"), false);
+  });
+}
