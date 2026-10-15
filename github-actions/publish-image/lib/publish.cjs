@@ -261,7 +261,6 @@ async function publishVerified({
   tags,
   existingPolicy = "exact",
   registry,
-  immutableTags = false,
   docker = createDockerClient(),
 }) {
   if (
@@ -278,15 +277,18 @@ async function publishVerified({
   const found = await Promise.all(
     tags.map((tag) => docker.lookup(image + ":" + tag, expected.platform)),
   );
-  for (const item of found.filter(Boolean))
-    verifyImage(item.image, expected, existingPolicy === "exact");
-  if (new Set(found.filter(Boolean).map((item) => item.digest)).size > 1)
-    throw new Error("Immutable tag digests conflict");
-  if (found.some((item) => !item) && immutableTags !== true)
-    throw new Error(
-      "New tags require caller confirmation of registry-side immutable tags",
-    );
-  let published = found.find(Boolean);
+  // Reuse a verified image when possible. A different existing tag is updated
+  // through the normal registry write path, rather than rejected client-side.
+  let published = found.find((item) => {
+    if (!item) return false;
+    try {
+      verifyImage(item.image, expected, existingPolicy === "exact");
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  let pushedFirst = false;
   if (!published) {
     await docker.load(archive);
     try {
@@ -295,18 +297,18 @@ async function publishVerified({
     published = await docker.lookup(image + ":" + tags[0], expected.platform);
     if (!published) throw new Error("Image push is unconfirmed");
     verifyImage(published.image, expected, true);
+    pushedFirst = true;
   }
-  for (const [i, tag] of tags.entries())
-    if (!found[i]) {
-      if (i !== 0 || found.some(Boolean))
-        try {
-          await docker.alias(image, published.digest, image + ":" + tag);
-        } catch {}
-      const read = await docker.lookup(image + ":" + tag, expected.platform);
-      if (!read || read.digest !== published.digest)
-        throw new Error("Image tag write is unconfirmed");
-      verifyImage(read.image, expected, existingPolicy === "exact");
-    }
+  for (const [i, tag] of tags.entries()) {
+    if (found[i]?.digest !== published.digest && !(pushedFirst && i === 0))
+      try {
+        await docker.alias(image, published.digest, image + ":" + tag);
+      } catch {}
+    const read = await docker.lookup(image + ":" + tag, expected.platform);
+    if (!read || read.digest !== published.digest)
+      throw new Error("Image tag write is unconfirmed");
+    verifyImage(read.image, expected, existingPolicy === "exact");
+  }
   return { digest: published.digest, imageId: published.image.Id };
 }
 module.exports = {

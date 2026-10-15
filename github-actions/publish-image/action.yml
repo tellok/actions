@@ -11,14 +11,11 @@ inputs:
     description: Registry image repository without a tag
     required: true
   tags:
-    description: JSON array of immutable destination tags
+    description: JSON array of destination tags
     required: true
   existing-policy:
-    description: exact requires identical image ID; source permits reusing the verified same source/version/platform image
+    description: exact reuses identical image ID; source permits reusing the verified same source/version/platform image
     default: exact
-  immutable-tags:
-    description: Caller confirms registry-side immutability covers every destination tag; not automatically verified
-    default: "false"
   registry:
     description: Registry hostname
     required: true
@@ -67,5 +64,5 @@ runs:
           const input = JSON.parse(process.env.TOOLKIT_INPUTS);
           core.setSecret(input.password);
           const expected = JSON.parse(await require('node:fs/promises').readFile(input['identity-file'],'utf8'));
-          const result = await require(process.env.TOOLKIT_ACTION_PATH+'/lib/publish.cjs').publish({archive:input.archive,expected,image:input.image,tags:JSON.parse(input.tags),existingPolicy:input['existing-policy'],registry:input.registry,immutableTags:input['immutable-tags']==='true'});
+          const result = await require(process.env.TOOLKIT_ACTION_PATH+'/lib/publish.cjs').publish({archive:input.archive,expected,image:input.image,tags:JSON.parse(input.tags),existingPolicy:input['existing-policy'],registry:input.registry});
           for(const [key,value] of Object.entries(result)) core.setOutput(key,value);

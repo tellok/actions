@@ -50,7 +50,6 @@ const options = (f) => ({
   expected,
   image: "registry.test/demo",
   registry: "registry.test",
-  immutableTags: true,
   tags: ["1.2.3", "sha-" + expected.source],
   docker: f.docker,
   verify: async () => {
@@ -63,14 +62,18 @@ test("verified archive is loaded and published without a build", async () => {
   assert.equal(result.digest, f.found.digest);
   assert.deepEqual(f.calls, ["verify", "load", "push", "alias"]);
 });
-test("immutable conflict prevents all registry writes", async () => {
+test("different existing image is updated through normal registry writes", async () => {
   const f = fixture();
   f.refs.set("registry.test/demo:1.2.3", {
     ...f.found,
     image: { ...f.found.image, Id: "sha256:" + "e".repeat(64) },
   });
-  await assert.rejects(publish(options(f)), /conflict/);
-  assert.deepEqual(f.calls, ["verify"]);
+  assert.equal((await publish(options(f))).digest, f.found.digest);
+  assert.deepEqual(f.calls, ["verify", "load", "push", "alias"]);
+  assert.equal(
+    f.refs.get("registry.test/demo:1.2.3").image.Id,
+    expected.imageId,
+  );
 });
 test("verified existing digest is reused without rebuilding or pushing", async () => {
   const f = fixture();
@@ -91,22 +94,15 @@ test("registry network and authentication errors are not treated as missing tags
   );
 });
 
-test("new tags require explicit server immutability confirmation; existing tags remain reusable", async () => {
+test("missing tags are published without an immutability confirmation", async () => {
   const f = fixture();
-  await assert.rejects(
-    publish({ ...options(f), immutableTags: false }),
-    /registry-side immutable/,
+  f.refs.set("registry.test/demo:" + options(f).tags[0], f.found);
+  await publish(options(f));
+  assert.deepEqual(f.calls, ["verify", "alias"]);
+  assert.equal(
+    f.refs.get("registry.test/demo:" + options(f).tags[1]).digest,
+    f.found.digest,
   );
-  assert.deepEqual(f.calls, ["verify"]);
-  for (const tag of options(f).tags)
-    f.refs.set("registry.test/demo:" + tag, f.found);
-  await publish({ ...options(f), immutableTags: false });
-  f.refs.delete("registry.test/demo:" + options(f).tags[1]);
-  await assert.rejects(
-    publish({ ...options(f), immutableTags: false }),
-    /registry-side immutable/,
-  );
-  assert.equal(f.calls.includes("alias"), false);
 });
 test("registry mismatch fails before archive verification or Docker use", async () => {
   const { validateRegistry } = require("../lib/publish.cjs");
@@ -242,4 +238,62 @@ test("server-side immutability refuses a competing image without replacing its t
   await assert.rejects(publish(options(f)), /conflict/);
   assert.equal(f.refs.get("registry.test/demo:1.2.3"), other);
   assert.equal(f.calls.includes("alias"), false);
+});
+
+test("mutable existing alias is updated to the verified publication digest", async () => {
+  const f = fixture();
+  f.refs.set("registry.test/demo:" + options(f).tags[0], f.found);
+  f.refs.set("registry.test/demo:" + options(f).tags[1], {
+    ...f.found,
+    digest: "sha256:" + "e".repeat(64),
+    image: { ...f.found.image, Id: "sha256:" + "e".repeat(64) },
+  });
+  await publish(options(f));
+  assert.deepEqual(f.calls, ["verify", "alias"]);
+  for (const tag of options(f).tags)
+    assert.equal(
+      f.refs.get("registry.test/demo:" + tag).digest,
+      f.found.digest,
+    );
+});
+test("registry refusal of an existing tag update cannot report publication success", async () => {
+  const f = fixture();
+  const old = {
+    ...f.found,
+    digest: "sha256:" + "e".repeat(64),
+    image: { ...f.found.image, Id: "sha256:" + "e".repeat(64) },
+  };
+  f.refs.set("registry.test/demo:" + options(f).tags[0], old);
+  f.docker.push = async () => {
+    f.calls.push("push");
+    throw new Error("registry forbids tag overwrite");
+  };
+  await assert.rejects(publish(options(f)), /conflict/);
+  assert.equal(f.refs.get("registry.test/demo:" + options(f).tags[0]), old);
+  assert.deepEqual(f.calls, ["verify", "load", "push"]);
+});
+test("registry refusal of an alias update leaves the old alias and fails confirmation", async () => {
+  const f = fixture();
+  f.refs.set("registry.test/demo:" + options(f).tags[0], f.found);
+  const old = { ...f.found, digest: "sha256:" + "e".repeat(64) };
+  f.refs.set("registry.test/demo:" + options(f).tags[1], old);
+  f.docker.alias = async () => {
+    throw new Error("registry forbids tag overwrite");
+  };
+  await assert.rejects(publish(options(f)), /unconfirmed/);
+  assert.equal(f.refs.get("registry.test/demo:" + options(f).tags[1]), old);
+});
+test("source reuse policy remains available without forcing a new image push", async () => {
+  const f = fixture();
+  const sameSource = {
+    ...f.found,
+    image: { ...f.found.image, Id: "sha256:" + "e".repeat(64) },
+  };
+  for (const tag of options(f).tags)
+    f.refs.set("registry.test/demo:" + tag, sameSource);
+  assert.equal(
+    (await publish({ ...options(f), existingPolicy: "source" })).imageId,
+    sameSource.image.Id,
+  );
+  assert.deepEqual(f.calls, ["verify"]);
 });

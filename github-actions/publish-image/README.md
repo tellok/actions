@@ -12,12 +12,11 @@ identity-file 的明确字段：source（完整 SHA）、version、platform（�
     image: ${{ vars.CONTAINER_IMAGE }}
     tags: '["1.2.3", "sha-example"]'
     registry: ${{ vars.CONTAINER_REGISTRY }}
-    immutable-tags: "true" # 调用方已核实服务端策略覆盖全部 tags
     username: ${{ github.actor }}
     password: ${{ secrets.REGISTRY_TOKEN }}
 ```
 
-默认 existing-policy:exact 要求已存在标签配置 ID 相同。调用方明确选 source 时，允许复用同来源/版本/平台的先前验证镜像，适用于重跑产生不同镜像 ID 的场景；绝不覆盖冲突不可变标签。各标签 digest 必须一致。写入响应未知只有读回相同 digest 才算成功。网络/鉴权失败不会当成 tag 不存在。Docker login post 步骤退出时注销本次登录。
+默认 existing-policy:exact 只复用配置 ID 相同的已有镜像。调用方明确选 source 时，允许复用同来源/版本/平台的先前验证镜像，适用于重跑产生不同镜像 ID 的场景。没有可复用镜像时，加载已验收归档并正常 push；已有目标标签内容不同时也走正常写入，由 registry 决定是否允许更新。成功返回前核对各标签 digest 一致。写入响应未知只有读回相同 digest 才算成功。网络/鉴权失败不会当成 tag 不存在。Docker login post 步骤退出时注销本次登录。
 
 完整输入、默认值和输出见同目录 [action.yml](action.yml)。所有上游 Actions 均固定完整提交；本仓库的各组件共用 Git 提交与版本标签。
 
@@ -25,4 +24,4 @@ identity-file 的明确字段：source（完整 SHA）、version、platform（�
 
 `registry` 必须是主机名（可带端口），`image` 的 registry 必须与它一致；Docker Hub 的 docker.io/index.docker.io/registry-1.docker.io 归一化比较。此校验发生在登录前。已存在标签必须指向单镜像 manifest；索引/manifest list 在拉取前拒绝，避免将未验证平台随索引发布。平台 variant 同时纳入归档和 registry 身份核对。
 
-新标签和补充别名默认禁止写入。只有调用方核实 registry **服务端不可变标签策略覆盖全部目标标签**，并显式设置 `immutable-tags: "true"` 后才允许写入；已有全部标签可只读核对后复用。此输入是调用方的前提确认，组件不会自动核验或修改服务端策略，也无法让普通可变 registry 的 push 具备条件创建能力。客户端读回检查不能代替服务端的并发保护；不要对允许覆盖的标签声明该前提。[Docker Hub 的不可变标签策略说明](https://docs.docker.com/docker-hub/repos/manage/hub-images/immutable-tags/)。
+标签写入遵循普通 Docker 客户端语义，不需要额外确认参数：新标签正常创建，可变标签允许更新；registry 启用不可变标签规则时，由服务端拒绝覆盖，组件不会移除该规则或强制绕过。组件不承诺跨任务标签不可变或多个标签的事务更新；并发写入者仍可能在检查之后更新标签。发布只核对本次读取时的 digest 和镜像身份。[Docker 标签规则说明](https://docs.docker.com/docker-hub/repos/manage/hub-images/immutable-tags/)。
